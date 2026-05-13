@@ -35,7 +35,7 @@ jobs:
       - name: Install host build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y liblgpio-dev libgpiod-dev build-essential
+          sudo apt-get install -y liblgpio-dev libgpiod-dev libmosquitto-dev build-essential
       - run: pip install --upgrade pip
       - run: pip install esphome
       - name: Compile each example for host target
