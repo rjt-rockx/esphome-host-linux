@@ -78,8 +78,8 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 def _ensure_host_patch_script():
-    """Register the shared host-patch pre-script. Patches upstream headers that
-    don't compile cleanly on host (e.g. mcp23xxx_base's undefined virtuals)."""
+    """Register the shared host-patch pre-script. Fixes upstream sources that
+    misbehave on host (e.g. ssieb seesaw's missing inter-transaction delay)."""
     script_src = (
         Path(__file__).parent.parent / "web_server_base" / "patch_web_server.py.script"
     )

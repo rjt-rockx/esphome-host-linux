@@ -145,31 +145,6 @@ def _patch_seesaw_readbuf(path: Path) -> None:
     path.write_text(src.replace(needle, repl, 1))
 
 
-def _patch_mcp23xxx_base(path: Path) -> None:
-    """Upstream's MCP23XXXBase<N>::pin_mode and pin_interrupt_mode are declared
-    non-pure virtual but never defined. The ESP32 linker GC-sections strips the
-    unused base-class vtable; the host linker doesn't. Give the declarations
-    empty inline bodies so the weak vtable references resolve."""
-    if not path.exists():
-        return
-    src = path.read_text()
-    marker = "// PI_HOST_PATCHED_MCP23XXX"
-    if marker in src:
-        return
-    needle = (
-        "  virtual void pin_mode(uint8_t pin, gpio::Flags flags);\n"
-        "  virtual void pin_interrupt_mode(uint8_t pin, MCP23XXXInterruptMode interrupt_mode);"
-    )
-    if needle not in src:
-        return
-    replacement = (
-        "  virtual void pin_mode(uint8_t pin, gpio::Flags flags) {}\n"
-        "  virtual void pin_interrupt_mode(uint8_t pin, MCP23XXXInterruptMode interrupt_mode) {}\n"
-        "  " + marker
-    )
-    path.write_text(src.replace(needle, replacement, 1))
-
-
 def _patch_all(_target, _source, _env):
     project_dir = Path(env.subst("$PROJECT_DIR"))  # type: ignore  # noqa: F821
 
@@ -179,7 +154,6 @@ def _patch_all(_target, _source, _env):
 
     _ensure_lwip_stubs(project_dir)
     _patch_host_ip_address(components_root / "network" / "ip_address.h")
-    _patch_mcp23xxx_base(components_root / "mcp23xxx_base" / "mcp23xxx_base.h")
     _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
 
     for rel in [
