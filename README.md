@@ -98,3 +98,11 @@ make help
 `make validate` runs locally on macOS (no Pi needed) and is the fastest feedback loop.
 
 The repo and scripts are still named `pi-*` because the inner-loop tooling targets Pi conventions (`pi-bootstrap.sh`, `pi-info.sh`, `PI=user@host`). The components themselves are named `linux_*` because the implementations are Linux-generic.
+
+## AI assistance
+
+Substantial parts of this codebase were drafted with AI assistance (Claude Code). The author reviews, tests, and integrates every change on real Raspberry Pi hardware before it lands on `main`, but treat the resulting code with the usual scepticism you'd apply to any third-party component: read it before you ship it.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
