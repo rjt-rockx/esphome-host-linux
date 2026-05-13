@@ -6,7 +6,7 @@ from esphome.core import CORE, CoroPriority, coroutine_with_priority
 
 CODEOWNERS = ["@rjt"]
 DEPENDENCIES = ["host"]
-AUTO_LOAD = ["spi"]
+AUTO_LOAD = ["spi", "linux_compat"]
 MULTI_CONF = True
 
 CONF_DEVICE = "device"

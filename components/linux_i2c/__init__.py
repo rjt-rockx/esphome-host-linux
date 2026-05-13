@@ -9,7 +9,7 @@ from esphome.helpers import copy_file_if_changed
 
 CODEOWNERS = ["@rjt"]
 DEPENDENCIES = ["host"]
-AUTO_LOAD = ["i2c"]
+AUTO_LOAD = ["i2c", "linux_compat"]
 MULTI_CONF = True
 
 CONF_DEVICE = "device"
