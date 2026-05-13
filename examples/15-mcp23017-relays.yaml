@@ -33,6 +33,9 @@ linux_i2c:
   id: bus_a
   device: /dev/i2c-1
 
+# Supplies the missing-on-host virtual definitions for MCP23XXXBase.
+linux_compat:
+
 mcp23017:
   - id: relay_bank
     address: 0x20
