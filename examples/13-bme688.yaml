@@ -1,0 +1,49 @@
+# BME688 environmental sensor (temp / humidity / pressure / gas) over I2C.
+#
+# The BME688 is firmware-compatible with the BME680 for raw measurements;
+# ESPHome's bme680_i2c platform works against both. Bosch's BSEC2 IAQ
+# library is x86_64+aarch64-only and proprietary; if you want IAQ, switch
+# this to bme68x_bsec2_i2c and link against libalgobsec2.a separately.
+#
+# Wiring (BCM, Pi I2C-1):
+#   - SDA: GPIO2 (header pin 3)
+#   - SCL: GPIO3 (header pin 5)
+#   - VCC: 3.3V (header pin 1)
+#   - GND: any GND
+#   - SDO/ADDR: tie LOW for 0x76, HIGH for 0x77 (Adafruit/SparkFun default
+#     0x77; generic Aliexpress boards default 0x76).
+
+esphome:
+  name: pi-bme688
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+linux_i2c:
+  id: bus_a
+  device: /dev/i2c-1
+
+sensor:
+  - platform: bme680
+    address: 0x77
+    update_interval: 30s
+    temperature:
+      name: "BME688 Temperature"
+      oversampling: 16x
+    humidity:
+      name: "BME688 Humidity"
+    pressure:
+      name: "BME688 Pressure"
+    gas_resistance:
+      name: "BME688 Gas Resistance"
+    heater:
+      duration: 100ms
+      temperature: 320

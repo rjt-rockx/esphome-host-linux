@@ -1,0 +1,67 @@
+# Hi-Link LD2410C 24GHz mmWave presence sensor over UART.
+#
+# Wiring (Pi UART1 / GPIO14 + GPIO15):
+#   - LD2410C TX -> Pi GPIO15 (RXD, header pin 10)
+#   - LD2410C RX -> Pi GPIO14 (TXD, header pin 8)
+#   - VCC: 5V (header pin 2 or 4) -- module needs 5V, but TX/RX are 3.3V-safe
+#   - GND: any GND
+#   - OUT pin (presence flag): optional, can also tie to a linux_gpio binary_sensor
+#
+# Pi setup (one-time):
+#   - Enable the PL011 UART by adding the following to /boot/firmware/config.txt:
+#       enable_uart=1
+#       dtoverlay=disable-bt
+#     and remove `console=serial0,115200` from /boot/firmware/cmdline.txt.
+#   - Reboot. /dev/ttyAMA0 is now wired to GPIO14/15 at the full PL011 speed.
+#
+# The LD2410C ships at 256000 baud (factory default), but the host UART
+# backend only accepts POSIX-standard rates and 256000 isn't one. First-time
+# setup: flash with a Pi or ESP32 using ESPHome's `ld2410.baud_rate:` select to
+# reconfigure the module to 230400 (persisted in module flash), then use 230400
+# below. Alternatively reconfigure via Hi-Link's Windows tool over USB-TTL.
+
+esphome:
+  name: pi-ld2410c
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+uart:
+  id: ld_uart
+  port: /dev/ttyAMA0
+  baud_rate: 230400
+  parity: NONE
+  stop_bits: 1
+
+ld2410:
+  uart_id: ld_uart
+
+binary_sensor:
+  - platform: ld2410
+    has_target:
+      name: "LD2410C Presence"
+    has_moving_target:
+      name: "LD2410C Moving"
+    has_still_target:
+      name: "LD2410C Still"
+
+sensor:
+  - platform: ld2410
+    moving_distance:
+      name: "LD2410C Moving Distance"
+    still_distance:
+      name: "LD2410C Still Distance"
+    moving_energy:
+      name: "LD2410C Moving Energy"
+    still_energy:
+      name: "LD2410C Still Energy"
+    detection_distance:
+      name: "LD2410C Detection Distance"

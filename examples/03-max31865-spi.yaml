@@ -1,0 +1,46 @@
+# Phase 3 smoke test: MAX31865 RTD-to-digital via Linux spidev.
+#
+# Wiring (BCM numbering):
+#   - SCLK: GPIO11 (SPI0 SCLK, header pin 23)
+#   - MISO: GPIO9  (SPI0 MISO, header pin 21)
+#   - MOSI: GPIO10 (SPI0 MOSI, header pin 19)
+#   - CS:   GPIO8  (SPI0 CE0,  header pin 24) -- kernel-managed via /dev/spidev0.0
+#   - DRDY: optional, not used here
+#
+# Pi setup (one-time):
+#   - Enable SPI: add 'dtparam=spi=on' to /boot/firmware/config.txt
+#   - User must be in 'spi' group (the bootstrap script handles this).
+#   - Verify /dev/spidev0.0 exists after reboot.
+#
+# Notes:
+#   - cs_pin is required by ESPHome's spi_device schema but is ignored on host:
+#     the kernel asserts CE0 for /dev/spidev0.0. We pass a placeholder.
+
+esphome:
+  name: pi-spi-test
+  friendly_name: Pi SPI Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+linux_gpio:
+linux_spi:
+  id: spi_bus
+  device: /dev/spidev0.0
+
+api:
+logger:
+  level: DEBUG
+
+sensor:
+  - platform: max31865
+    name: "RTD Temperature"
+    cs_pin: 8
+    reference_resistance: 430 ohm
+    rtd_nominal_resistance: 100 ohm
+    rtd_wires: 3
+    mains_filter: 50HZ
+    update_interval: 30s

@@ -1,0 +1,61 @@
+# System-level generic components on host:
+#   - linux_time: trust the kernel's wall clock (NTP-synced by the OS)
+#   - homeassistant time platform: receive time from HA via the native API
+#   - restart switch: terminate the process (relies on systemd auto-restart)
+#   - copy: mirror an existing entity as a new one
+#
+# Useful for verifying that ESPHome's time:, switch:, and entity-mirror
+# plumbing all work end-to-end on host.
+
+esphome:
+  name: pi-time-test
+  friendly_name: Pi Time and System Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+time:
+  - platform: linux_time
+    id: sys_time
+    timezone: "Europe/London"
+    on_time:
+      - seconds: 0
+        minutes: /1
+        then:
+          - logger.log:
+              format: "[time] minute tick %04d-%02d-%02d %02d:%02d:%02d"
+              args:
+                - id(sys_time).now().year
+                - id(sys_time).now().month
+                - id(sys_time).now().day_of_month
+                - id(sys_time).now().hour
+                - id(sys_time).now().minute
+                - id(sys_time).now().second
+
+  - platform: homeassistant
+    id: ha_time
+
+sensor:
+  - platform: uptime
+    id: real_uptime
+    name: "Uptime Seconds"
+    update_interval: 30s
+
+  - platform: copy
+    source_id: real_uptime
+    name: "Uptime (mirrored)"
+    filters:
+      - multiply: 1.0
+
+switch:
+  - platform: restart
+    name: "Restart Process"
+    id: restart_switch

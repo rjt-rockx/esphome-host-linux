@@ -1,0 +1,45 @@
+# Phase 2 smoke test: linux_i2c + stock bme280 sensor.
+#
+# Wiring (BCM numbering, default Pi I2C bus):
+#   - SDA: GPIO2 (header pin 3)
+#   - SCL: GPIO3 (header pin 5)
+#   - VCC: 3.3V (header pin 1)
+#   - GND: any GND pin
+#
+# Requires on the Pi:
+#   sudo raspi-config nonint do_i2c 0
+#   sudo apt install liblgpio-dev (already from bootstrap)
+#
+# Run with: make run EXAMPLE=examples/02-bme280-i2c.yaml
+
+esphome:
+  name: pi-i2c-test
+  friendly_name: Pi I2C Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+linux_i2c:
+  id: bus_a
+  device: /dev/i2c-1
+  scan: true
+
+sensor:
+  - platform: bme280_i2c
+    i2c_id: bus_a
+    address: 0x76
+    update_interval: 30s
+    temperature:
+      name: "BME280 Temperature"
+    humidity:
+      name: "BME280 Humidity"
+    pressure:
+      name: "BME280 Pressure"

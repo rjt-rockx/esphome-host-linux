@@ -1,0 +1,35 @@
+# Phase 5b smoke test: DS18B20 via Linux kernel w1-gpio (no bit-banging).
+#
+# Wiring:
+#   - DS18B20 data: GPIO4 (header pin 7) with 4.7k pullup to 3.3V
+#   - VCC: 3.3V (parasite mode) or 3.3V/5V (normal)
+#   - GND: any GND
+#
+# Pi setup (one-time):
+#   - Add 'dtoverlay=w1-gpio,gpiopin=4' to /boot/firmware/config.txt
+#   - sudo modprobe w1-gpio (or reboot)
+#   - List discovered devices: ls /sys/bus/w1/devices/
+#   - Each DS18B20 appears as a directory like '28-3c01b556cab1'.
+#
+# Replace the address below with the one(s) listed on your Pi.
+
+esphome:
+  name: pi-w1-test
+  friendly_name: Pi 1-Wire Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+sensor:
+  - platform: linux_w1
+    name: "Greenhouse Temperature"
+    address: "28-3c01b556cab1"
+    update_interval: 30s

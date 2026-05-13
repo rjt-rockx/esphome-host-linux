@@ -1,0 +1,43 @@
+# Phase 5a smoke test: edge-triggered interrupts via lgpio alerts.
+#
+# Exercises linux_gpio's attach_interrupt() path using stock pulse_counter.
+#
+# Wiring (BCM numbering):
+#   - Input pulse source on GPIO17 (header pin 11) to GND, internal pull-up.
+#     Suitable sources: rotary encoder, PIR motion sensor (HC-SR501), reed switch,
+#     or a button you can mash. For a real benchmark, connect a square-wave
+#     signal generator at a known frequency.
+#
+# Note: callbacks run on lgpio's worker thread, not in interrupt context.
+# Latency is on the order of microseconds (Linux scheduling), not nanoseconds.
+# Fine for pulse rates up to a few kHz; not suitable for very high-frequency
+# counting.
+
+esphome:
+  name: pi-pulse-test
+  friendly_name: Pi Pulse Counter Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+linux_gpio:
+
+api:
+logger:
+  level: DEBUG
+
+sensor:
+  - platform: pulse_counter
+    name: "Pulse Count"
+    pin:
+      number: 17
+      mode:
+        input: true
+        pullup: true
+    count_mode:
+      rising_edge: INCREMENT
+      falling_edge: DISABLE
+    update_interval: 10s

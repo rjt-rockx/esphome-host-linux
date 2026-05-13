@@ -1,0 +1,42 @@
+# BLE scanning via Linux HCI raw sockets. The compiled binary needs
+# cap_net_admin + cap_net_raw to talk to /dev/bluetooth. After each
+# `esphome compile`, grant them once:
+#
+#   scripts/pi-bless-binary.sh .esphome/build/pi-ble/.pioenvs/pi-ble/program
+#
+# (or run with sudo, but capabilities survive across logins and avoid full
+# root privilege).
+
+esphome:
+  name: pi-ble
+
+host:
+
+logger:
+  level: VERBOSE
+  logs:
+    esp32_ble_tracker: VERBOSE
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32_ble_tracker:
+  id: ble_tracker
+  hci_device: hci0
+  scan_parameters:
+    interval: 320ms
+    window: 30ms
+    active: true
+
+binary_sensor:
+  - platform: ble_presence
+    name: "BLE Presence Test"
+    mac_address: 0C:4E:A0:86:D2:72  # a nearby Govee humidity sensor
+    timeout: 1min
+
+sensor:
+  - platform: ble_rssi
+    name: "BLE RSSI Test"
+    mac_address: 0C:4E:A0:86:D2:72

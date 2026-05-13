@@ -1,0 +1,107 @@
+# MCP23017 16-bit I2C GPIO expander driving heating + lighting relays.
+#
+# A typical relay HAT exposes a row of MCP23017 outputs (one per relay coil),
+# each switched through a transistor + flyback diode. We model each relay
+# coil as a `switch:` entity so Home Assistant can toggle it directly.
+#
+# Wiring (BCM, Pi I2C-1):
+#   - SDA: GPIO2 (header pin 3)
+#   - SCL: GPIO3 (header pin 5)
+#   - VCC: 3.3V or 5V depending on the breakout
+#   - GND: any GND
+#   - A0/A1/A2 address strap pins: default 0x20 (all low).
+#
+# Map: ports A0-A3 drive 4 heating zones, ports B0-B3 drive 4 lighting zones.
+# Adjust pin numbers and inverted flags to match your board's relay logic
+# (most low-side relays are active LOW -> set inverted: true).
+
+esphome:
+  name: pi-mcp23017
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+linux_i2c:
+  id: bus_a
+  device: /dev/i2c-1
+
+mcp23017:
+  - id: relay_bank
+    address: 0x20
+
+switch:
+  # --- Heating zones (PORTA) ---
+  - platform: gpio
+    name: "Heating Lounge"
+    pin:
+      mcp23xxx: relay_bank
+      number: 0       # A0
+      mode:
+        output: true
+      inverted: true   # active-low relay drive
+  - platform: gpio
+    name: "Heating Kitchen"
+    pin:
+      mcp23xxx: relay_bank
+      number: 1       # A1
+      mode:
+        output: true
+      inverted: true
+  - platform: gpio
+    name: "Heating Bedroom"
+    pin:
+      mcp23xxx: relay_bank
+      number: 2       # A2
+      mode:
+        output: true
+      inverted: true
+  - platform: gpio
+    name: "Heating Bathroom"
+    pin:
+      mcp23xxx: relay_bank
+      number: 3       # A3
+      mode:
+        output: true
+      inverted: true
+
+  # --- Lighting zones (PORTB) ---
+  - platform: gpio
+    name: "Light Lounge"
+    pin:
+      mcp23xxx: relay_bank
+      number: 8       # B0 (mcp23017 numbers B-port pins 8..15)
+      mode:
+        output: true
+      inverted: true
+  - platform: gpio
+    name: "Light Kitchen"
+    pin:
+      mcp23xxx: relay_bank
+      number: 9       # B1
+      mode:
+        output: true
+      inverted: true
+  - platform: gpio
+    name: "Light Bedroom"
+    pin:
+      mcp23xxx: relay_bank
+      number: 10      # B2
+      mode:
+        output: true
+      inverted: true
+  - platform: gpio
+    name: "Light Bathroom"
+    pin:
+      mcp23xxx: relay_bank
+      number: 11      # B3
+      mode:
+        output: true
+      inverted: true

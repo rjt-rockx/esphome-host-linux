@@ -1,0 +1,86 @@
+# Generic / non-HAL components running on the host platform:
+#   - uptime sensor (scheduler + millis())
+#   - template sensors / binary sensors / text sensors (lambdas)
+#   - interval (recurring action)
+#   - template switch (state machine + lambda)
+#   - template button (one-shot action)
+#   - logger, api, mdns (already validated)
+#
+# No real wiring needed. Useful for verifying the ESPHome runtime, scheduler,
+# protobuf API, and Home Assistant integration work end-to-end on Pi without
+# touching peripherals.
+
+esphome:
+  name: pi-generic-test
+  friendly_name: Pi Generic Components Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+globals:
+  - id: toggle_state
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+sensor:
+  - platform: uptime
+    name: "Uptime Seconds"
+    update_interval: 10s
+
+  - platform: template
+    name: "Random Number"
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return rand() % 100;
+
+binary_sensor:
+  - platform: template
+    name: "Even Second"
+    lambda: |-
+      return (esphome::millis() / 1000) % 2 == 0;
+
+text_sensor:
+  - platform: template
+    name: "Greeting"
+    update_interval: 60s
+    lambda: |-
+      return {std::string("Hello from Pi 5!")};
+
+switch:
+  - platform: template
+    name: "Soft Toggle"
+    id: soft_toggle
+    optimistic: true
+    turn_on_action:
+      - globals.set:
+          id: toggle_state
+          value: "true"
+      - logger.log: "Soft toggle ON"
+    turn_off_action:
+      - globals.set:
+          id: toggle_state
+          value: "false"
+      - logger.log: "Soft toggle OFF"
+
+button:
+  - platform: template
+    name: "Ping"
+    on_press:
+      - logger.log:
+          format: "Ping pressed, toggle is %s"
+          args: ['id(toggle_state) ? "on" : "off"']
+
+interval:
+  - interval: 15s
+    then:
+      - logger.log: "[interval] 15s heartbeat"

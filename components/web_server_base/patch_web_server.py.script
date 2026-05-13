@@ -1,0 +1,340 @@
+"""PlatformIO pre-script: add USE_HOST branches to upstream web_server.h and
+list_entities.h after ESPHome has copied them into the build directory.
+
+Idempotent: safe to run repeatedly. Searches for the exact upstream lines and
+replaces them with USE_HOST-aware variants.
+"""
+
+# pylint: disable=undefined-variable
+Import("env")  # type: ignore  # noqa: F821
+
+import shutil
+from pathlib import Path
+
+
+def _patch(path: Path, marker: str, replacements: list[tuple[str, str]]) -> None:
+    if not path.exists():
+        return
+    src = path.read_text()
+    if marker in src:
+        return  # already patched
+    new = src
+    for old, repl in replacements:
+        if old not in new:
+            raise RuntimeError(f"patch_web_server: expected fragment not found in {path}:\n{old}")
+        new = new.replace(old, repl)
+    new = new + "\n" + marker + "\n"
+    path.write_text(new)
+
+
+def _patch_ble_guard(path: Path) -> None:
+    """Expand `#ifdef USE_ESP32` guards in upstream BLE consumers to also accept
+    USE_HOST so they compile against our host-side esp32_ble_tracker shim."""
+    if not path.exists():
+        return
+    src = path.read_text()
+    marker = "// PI_HOST_PATCHED_BLE"
+    if marker in src:
+        return
+    new = src.replace("#ifdef USE_ESP32", "#if defined(USE_ESP32) || defined(USE_HOST)")
+    if new == src:
+        return
+    path.write_text(new + "\n" + marker + "\n")
+
+
+LWIP_DNS_H = """\
+#pragma once
+// Host stub for lwip/dns.h. The MQTT component compiles a DNS resolution path
+// that calls into lwip; on host we defer DNS to libmosquitto so this stub
+// pretends every lookup succeeds immediately. mqtt_client.cpp then bypasses
+// its asynchronous resolution state and calls start_connect_() with the
+// hostname string verbatim.
+
+#include <cstdint>
+#include "lwip/err.h"
+#include "esphome/components/network/ip_address.h"  // brings ip_addr_t = in_addr
+
+namespace esphome::network {
+struct IPAddress;
+}
+
+using dns_found_callback = void (*)(const char *name, const ip_addr_t *ipaddr, void *callback_arg);
+
+inline err_t dns_gethostbyname_addrtype(const char *name, ip_addr_t *addr, dns_found_callback /*cb*/, void * /*arg*/,
+                                        int /*addrtype*/) {
+  if (addr != nullptr)
+    addr->s_addr = 0;
+  return 0;  // ERR_OK — caller proceeds straight to start_connect_().
+}
+
+#define LWIP_DNS_ADDRTYPE_IPV4 0
+#define LWIP_DNS_ADDRTYPE_IPV6_IPV4 1
+"""
+
+LWIP_ERR_H = """\
+#pragma once
+// Host stub for lwip/err.h.
+
+#include <cstdint>
+
+using err_t = int8_t;
+#define ERR_OK 0
+#define ERR_INPROGRESS -5
+#define ERR_ARG -16
+"""
+
+
+def _ensure_lwip_stubs(project_dir: Path) -> None:
+    lwip_dir = project_dir / "src" / "lwip"
+    lwip_dir.mkdir(parents=True, exist_ok=True)
+    for name, content in (("dns.h", LWIP_DNS_H), ("err.h", LWIP_ERR_H)):
+        p = lwip_dir / name
+        if not p.exists() or p.read_text() != content:
+            p.write_text(content)
+
+
+def _patch_host_ip_address(path: Path) -> None:
+    """Upstream's host IPAddress is missing helpers (is_set/is_ip4/...) that
+    components like mqtt_client.cpp call on every platform. Drop in
+    no-frills implementations on the USE_HOST branch."""
+    if not path.exists():
+        return
+    src = path.read_text()
+    marker = "// PI_HOST_IP_HELPERS"
+    if marker in src:
+        return
+    needle = "  IPAddress(const ip_addr_t *other_ip) { ip_addr_ = *other_ip; }"
+    if needle not in src:
+        return
+    insert = needle + "\n  bool is_set() const { return this->ip_addr_.s_addr != 0; }\n" \
+                      "  bool is_ip4() const { return true; }\n" \
+                      "  bool is_ip6() const { return false; }\n" \
+                      "  bool is_multicast() const { return false; }\n  " + marker
+    src = src.replace(needle, insert, 1)
+    path.write_text(src)
+
+
+def _patch_seesaw_readbuf(path: Path) -> None:
+    """Adafruit Seesaw firmware requires >=250us between the register-address
+    write and the subsequent read on the same transaction. On Arduino the Wire
+    library's latency masks this, but on Linux user-space I2C the two ioctls
+    are too fast and reads come back garbage/zero (encoder position stays at
+    0 or flickers). Inject a delayMicroseconds(250) between the write and the
+    read in ssieb/esphome_components/seesaw's readbuf()."""
+    if not path.exists():
+        return
+    src = path.read_text()
+    marker = "// PI_HOST_PATCHED_SEESAW"
+    if marker in src:
+        return
+    needle = (
+        "  i2c::ErrorCode err = this->write(sendbuf, 2);\n"
+        "  if (err != i2c::ERROR_OK)\n"
+        "    return err;\n"
+        "  return this->read(buf, len);"
+    )
+    if needle not in src:
+        return
+    repl = (
+        "  i2c::ErrorCode err = this->write(sendbuf, 2);\n"
+        "  if (err != i2c::ERROR_OK)\n"
+        "    return err;\n"
+        "  delayMicroseconds(250);  " + marker + "\n"
+        "  return this->read(buf, len);"
+    )
+    path.write_text(src.replace(needle, repl, 1))
+
+
+def _patch_mcp23xxx_base(path: Path) -> None:
+    """Upstream's MCP23XXXBase<N>::pin_mode and pin_interrupt_mode are declared
+    non-pure virtual but never defined. The ESP32 linker GC-sections strips the
+    unused base-class vtable; the host linker doesn't. Give the declarations
+    empty inline bodies so the weak vtable references resolve."""
+    if not path.exists():
+        return
+    src = path.read_text()
+    marker = "// PI_HOST_PATCHED_MCP23XXX"
+    if marker in src:
+        return
+    needle = (
+        "  virtual void pin_mode(uint8_t pin, gpio::Flags flags);\n"
+        "  virtual void pin_interrupt_mode(uint8_t pin, MCP23XXXInterruptMode interrupt_mode);"
+    )
+    if needle not in src:
+        return
+    replacement = (
+        "  virtual void pin_mode(uint8_t pin, gpio::Flags flags) {}\n"
+        "  virtual void pin_interrupt_mode(uint8_t pin, MCP23XXXInterruptMode interrupt_mode) {}\n"
+        "  " + marker
+    )
+    path.write_text(src.replace(needle, replacement, 1))
+
+
+def _patch_all(_target, _source, _env):
+    project_dir = Path(env.subst("$PROJECT_DIR"))  # type: ignore  # noqa: F821
+
+    components_root = project_dir / "src" / "esphome" / "components"
+    src_root = components_root / "web_server"
+    mqtt_root = components_root / "mqtt"
+
+    _ensure_lwip_stubs(project_dir)
+    _patch_host_ip_address(components_root / "network" / "ip_address.h")
+    _patch_mcp23xxx_base(components_root / "mcp23xxx_base" / "mcp23xxx_base.h")
+    _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
+
+    for rel in [
+        "ble_presence/ble_presence_device.h",
+        "ble_presence/ble_presence_device.cpp",
+        "ble_rssi/ble_rssi_sensor.h",
+        "ble_rssi/ble_rssi_sensor.cpp",
+    ]:
+        _patch_ble_guard(components_root / rel)
+
+    _patch(
+        mqtt_root / "mqtt_client.h",
+        marker="// PI_HOST_PATCHED_MQTT",
+        replacements=[
+            (
+                "#if defined(USE_ESP32)\n"
+                "#include \"mqtt_backend_esp32.h\"\n"
+                "#elif defined(USE_ESP8266)\n"
+                "#include \"mqtt_backend_esp8266.h\"\n"
+                "#elif defined(USE_LIBRETINY)\n"
+                "#include \"mqtt_backend_libretiny.h\"\n"
+                "#endif",
+                "#if defined(USE_HOST)\n"
+                "#include \"mqtt_backend_host.h\"\n"
+                "#elif defined(USE_ESP32)\n"
+                "#include \"mqtt_backend_esp32.h\"\n"
+                "#elif defined(USE_ESP8266)\n"
+                "#include \"mqtt_backend_esp8266.h\"\n"
+                "#elif defined(USE_LIBRETINY)\n"
+                "#include \"mqtt_backend_libretiny.h\"\n"
+                "#endif",
+            ),
+            (
+                "#if defined(USE_ESP32)\n"
+                "  MQTTBackendESP32 mqtt_backend_;\n"
+                "#elif defined(USE_ESP8266)\n"
+                "  MQTTBackendESP8266 mqtt_backend_;\n"
+                "#elif defined(USE_LIBRETINY)\n"
+                "  MQTTBackendLibreTiny mqtt_backend_;\n"
+                "#endif",
+                "#if defined(USE_HOST)\n"
+                "  MQTTBackendHost mqtt_backend_;\n"
+                "#elif defined(USE_ESP32)\n"
+                "  MQTTBackendESP32 mqtt_backend_;\n"
+                "#elif defined(USE_ESP8266)\n"
+                "  MQTTBackendESP8266 mqtt_backend_;\n"
+                "#elif defined(USE_LIBRETINY)\n"
+                "  MQTTBackendLibreTiny mqtt_backend_;\n"
+                "#endif",
+            ),
+            (
+                "#include \"lwip/ip_addr.h\"",
+                "#if !defined(USE_HOST)\n"
+                "#include \"lwip/ip_addr.h\"\n"
+                "#endif",
+            ),
+        ],
+    )
+
+    _patch(
+        src_root / "web_server.cpp",
+        marker="// PI_HOST_PATCHED",
+        replacements=[
+            (
+                "#ifdef USE_ESP32\n  this->base_->add_handler(&this->events_);\n#endif",
+                "#if defined(USE_ESP32) || defined(USE_HOST)\n  this->base_->add_handler(&this->events_);\n#endif",
+            ),
+        ],
+    )
+
+    _patch(
+        src_root / "web_server.h",
+        marker="// PI_HOST_PATCHED",
+        replacements=[
+            (
+                "#ifdef USE_ESP32\n"
+                "  AsyncEventSource events_{\"/events\", this};\n"
+                "#elif USE_ARDUINO\n"
+                "  DeferredUpdateEventSourceList events_;\n"
+                "#endif",
+                "#if defined(USE_ESP32) || defined(USE_HOST)\n"
+                "  AsyncEventSource events_{\"/events\", this};\n"
+                "#elif USE_ARDUINO\n"
+                "  DeferredUpdateEventSourceList events_;\n"
+                "#endif",
+            ),
+        ],
+    )
+
+    _patch(
+        src_root / "list_entities.h",
+        marker="// PI_HOST_PATCHED",
+        replacements=[
+            (
+                "namespace esphome::web_server_idf {\n"
+                "#ifdef USE_ESP32\n"
+                "class AsyncEventSource;\n"
+                "#endif\n"
+                "}  // namespace esphome::web_server_idf",
+                "namespace esphome::web_server_idf {\n"
+                "#if defined(USE_ESP32) || defined(USE_HOST)\n"
+                "class AsyncEventSource;\n"
+                "#endif\n"
+                "}  // namespace esphome::web_server_idf",
+            ),
+            (
+                "#ifdef USE_ESP32\n"
+                "  ListEntitiesIterator(const WebServer *ws, esphome::web_server_idf::AsyncEventSource *es);\n"
+                "#elif defined(USE_ARDUINO)\n"
+                "  ListEntitiesIterator(const WebServer *ws, DeferredUpdateEventSource *es);\n"
+                "#endif",
+                "#if defined(USE_ESP32) || defined(USE_HOST)\n"
+                "  ListEntitiesIterator(const WebServer *ws, esphome::web_server_idf::AsyncEventSource *es);\n"
+                "#elif defined(USE_ARDUINO)\n"
+                "  ListEntitiesIterator(const WebServer *ws, DeferredUpdateEventSource *es);\n"
+                "#endif",
+            ),
+            (
+                "#ifdef USE_ESP32\n"
+                "  esphome::web_server_idf::AsyncEventSource *events_;\n"
+                "#elif USE_ARDUINO\n"
+                "  DeferredUpdateEventSource *events_;\n"
+                "#endif",
+                "#if defined(USE_ESP32) || defined(USE_HOST)\n"
+                "  esphome::web_server_idf::AsyncEventSource *events_;\n"
+                "#elif USE_ARDUINO\n"
+                "  DeferredUpdateEventSource *events_;\n"
+                "#endif",
+            ),
+        ],
+    )
+
+    _patch(
+        src_root / "list_entities.cpp",
+        marker="// PI_HOST_PATCHED",
+        replacements=[
+            (
+                "#ifdef USE_ESP32\n"
+                "ListEntitiesIterator::ListEntitiesIterator(const WebServer *ws, AsyncEventSource *es) : web_server_(ws), events_(es) {}\n"
+                "#elif USE_ARDUINO\n"
+                "ListEntitiesIterator::ListEntitiesIterator(const WebServer *ws, DeferredUpdateEventSource *es)\n"
+                "    : web_server_(ws), events_(es) {}\n"
+                "#endif",
+                "#if defined(USE_ESP32) || defined(USE_HOST)\n"
+                "ListEntitiesIterator::ListEntitiesIterator(const WebServer *ws, AsyncEventSource *es) : web_server_(ws), events_(es) {}\n"
+                "#elif USE_ARDUINO\n"
+                "ListEntitiesIterator::ListEntitiesIterator(const WebServer *ws, DeferredUpdateEventSource *es)\n"
+                "    : web_server_(ws), events_(es) {}\n"
+                "#endif",
+            ),
+        ],
+    )
+
+
+# ESPHome runs copy_src_tree() before invoking PlatformIO, so by the time this
+# pre-script is loaded the source files are already in place. Patch them
+# immediately so subsequent compile sees the patched version.
+_patch_all(None, None, None)

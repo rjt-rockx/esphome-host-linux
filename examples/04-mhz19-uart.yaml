@@ -1,0 +1,51 @@
+# Phase 4 smoke test: stock mhz19 CO2 sensor over UART.
+#
+# ESPHome's host platform already has a working UART implementation in
+# uart_component_host.{h,cpp} that uses Linux termios on a device path.
+# We just point it at /dev/ttyAMA0 and use the stock mhz19 driver.
+#
+# Wiring (BCM numbering):
+#   - MH-Z19 TXD -> Pi RXD (GPIO15, header pin 10)
+#   - MH-Z19 RXD -> Pi TXD (GPIO14, header pin 8)
+#   - VCC: 5V (sensor needs 5V even though logic levels are 3.3V tolerant)
+#   - GND: any GND
+#
+# Pi 4B caveat: /dev/ttyAMA0 is the PL011 UART. By default it's mapped to
+# Bluetooth on Pi 3/4/5. To use it for serial:
+#   - Add 'dtoverlay=disable-bt' to /boot/firmware/config.txt
+#   - sudo systemctl disable hciuart
+#   - reboot
+# Alternatively, use /dev/ttyS0 (mini-UART), but it's less reliable at high baud.
+#
+# Enable UART: sudo raspi-config -> Interface Options -> Serial Port
+#   - "Login shell over serial?" NO
+#   - "Serial port hardware enabled?" YES
+
+esphome:
+  name: pi-uart-test
+  friendly_name: Pi UART Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+uart:
+  id: uart_bus
+  port: /dev/ttyAMA0
+  baud_rate: 9600
+
+sensor:
+  - platform: mhz19
+    uart_id: uart_bus
+    co2:
+      name: "MH-Z19 CO2"
+    temperature:
+      name: "MH-Z19 Temperature"
+    update_interval: 30s

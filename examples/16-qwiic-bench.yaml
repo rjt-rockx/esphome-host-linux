@@ -1,0 +1,150 @@
+# Full Qwiic bench: SparkFun OLED + BME688 + SHT41 + Adafruit
+# rotary encoder + LED, all on /dev/i2c-1 via the SparkFun Qwiic pHAT.
+#
+# I2C address map (as seen by `i2cdetect -y 1`):
+#   0x20  MCP23017 GPIO expander; A0..A4 drive 5 relays
+#   0x36  Adafruit Seesaw rotary encoder + NeoPixel + button
+#   0x3D  SparkFun Qwiic Micro OLED (SSD1306, 64x48)
+#   0x44  Sensirion SHT41 temp/humidity
+#   0x76  BME688 (SDO tied LOW; jumper to HIGH for 0x77)
+#
+# The Seesaw support comes from ssieb's external component; the rest is
+# upstream ESPHome.
+
+esphome:
+  name: pi-qwiic
+  friendly_name: Pi Qwiic Bench
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+  - source: github://ssieb/esphome_components
+    components: [seesaw]
+
+host:
+
+api:
+  reboot_timeout: 0s
+
+logger:
+  level: DEBUG
+
+web_server:
+  port: 8080
+  version: 3
+  include_internal: true
+
+linux_i2c:
+  id: bus_a
+  device: /dev/i2c-1
+
+seesaw:
+  address: 0x36
+
+mcp23017:
+  - id: relays
+    address: 0x20
+
+# ---- Sensors ----
+
+sensor:
+  # BME688: temp/humidity/pressure/gas
+  - platform: bme680
+    address: 0x76
+    update_interval: 30s
+    temperature:
+      name: "BME688 Temperature"
+      id: bme_temp
+      oversampling: 16x
+    humidity:
+      name: "BME688 Humidity"
+    pressure:
+      name: "BME688 Pressure"
+    gas_resistance:
+      name: "BME688 Gas Resistance"
+    heater:
+      duration: 100ms
+      temperature: 320
+
+  # SHT41: a second temp/humidity for cross-reference. Wide-range, lab-grade.
+  - platform: sht4x
+    address: 0x44
+    update_interval: 30s
+    temperature:
+      name: "SHT41 Temperature"
+      id: sht_temp
+    humidity:
+      name: "SHT41 Humidity"
+      id: sht_hum
+
+  # Rotary encoder counts as an int sensor. Wraps to ±32k. Use a delta filter
+  # in HA / automations if you want to treat it as a "knob".
+  - platform: seesaw
+    id: encoder_pos
+    type: encoder
+    name: "Encoder Position"
+
+binary_sensor:
+  - platform: seesaw
+    id: encoder_btn
+    name: "Encoder Button"
+    pin: 24
+
+# ---- Outputs ----
+
+# Relays on MCP23017 PORTA pins 0..6. Mixed wiring on this bench:
+#   1..3, 6..7 are active-high (drive HIGH to energize)
+#   4..5 are active-low (drive LOW to energize) -- inverted: true
+switch:
+  - platform: gpio
+    name: "Relay 1"
+    pin: {mcp23xxx: relays, number: 0, mode: {output: true}}
+  - platform: gpio
+    name: "Relay 2"
+    pin: {mcp23xxx: relays, number: 1, mode: {output: true}}
+  - platform: gpio
+    name: "Relay 3"
+    pin: {mcp23xxx: relays, number: 2, mode: {output: true}}
+  - platform: gpio
+    name: "Relay 4"
+    pin: {mcp23xxx: relays, number: 3, mode: {output: true}, inverted: true}
+  - platform: gpio
+    name: "Relay 5"
+    pin: {mcp23xxx: relays, number: 4, mode: {output: true}, inverted: true}
+  - platform: gpio
+    name: "Relay 6"
+    pin: {mcp23xxx: relays, number: 5, mode: {output: true}}
+  - platform: gpio
+    name: "Relay 7"
+    pin: {mcp23xxx: relays, number: 6, mode: {output: true}}
+
+# NeoPixel inside the encoder shaft
+light:
+  - platform: seesaw
+    id: encoder_led
+    name: "Encoder LED"
+    pin: 6
+
+# ---- OLED display ----
+
+font:
+  - file: "gfonts://Roboto"
+    id: roboto
+    size: 10
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 64x48"
+    address: 0x3D
+    update_interval: 1s
+    lambda: |-
+      // 64x48 panel: 4 lines at 12px line height.
+      if (id(bme_temp).has_state())
+        it.printf(0,  0, id(roboto), "B %.1f", id(bme_temp).state);
+      if (id(sht_temp).has_state())
+        it.printf(0, 12, id(roboto), "S %.1f", id(sht_temp).state);
+      if (id(sht_hum).has_state())
+        it.printf(0, 24, id(roboto), "H %.0f%%", id(sht_hum).state);
+      if (id(encoder_pos).has_state())
+        it.printf(0, 36, id(roboto), "E %.0f", id(encoder_pos).state);

@@ -1,0 +1,62 @@
+# MQTT on host via libmosquitto. Bootstrap script installs libmosquitto-dev.
+#
+# Quick local broker test:
+#   sudo apt-get install -y mosquitto
+#   sudo systemctl start mosquitto
+#   mosquitto_sub -t '#' -v   # in another terminal
+#
+# This config publishes a counter sensor every 10s and exposes a switch
+# whose state Home Assistant or any MQTT client can toggle by publishing
+# to pi-mqtt/switch/test_switch/command.
+
+esphome:
+  name: pi-mqtt
+
+host:
+
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+mqtt:
+  broker: 127.0.0.1
+  port: 1883
+  discovery: false
+  topic_prefix: pi-mqtt
+  birth_message:
+    topic: pi-mqtt/status
+    payload: online
+  will_message:
+    topic: pi-mqtt/status
+    payload: offline
+  keepalive: 30s
+
+globals:
+  - id: tick_counter
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+interval:
+  - interval: 10s
+    then:
+      - lambda: id(tick_counter) += 1;
+      - component.update: tick_sensor
+
+sensor:
+  - platform: template
+    id: tick_sensor
+    name: "Tick"
+    update_interval: never
+    lambda: |-
+      return (float) id(tick_counter);
+
+switch:
+  - platform: template
+    id: test_switch
+    name: "Test Switch"
+    optimistic: true

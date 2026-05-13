@@ -1,0 +1,37 @@
+# MLX90614 non-contact IR thermometer over I2C.
+#
+# Wiring (BCM, Pi I2C-1):
+#   - SDA: GPIO2 (header pin 3)
+#   - SCL: GPIO3 (header pin 5)
+#   - VCC: 3.3V (header pin 1) -- 3V parts are safer on the Pi than the 5V variant
+#   - GND: any GND pin
+#
+# I2C address is fixed at 0x5A. Reports ambient + object temperature.
+
+esphome:
+  name: pi-mlx90614
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+linux_i2c:
+  id: bus_a
+  device: /dev/i2c-1
+
+sensor:
+  - platform: mlx90614
+    ambient:
+      name: "MLX Ambient"
+    object:
+      name: "MLX Object"
+      emissivity: 100%
+    address: 0x5A
+    update_interval: 5s

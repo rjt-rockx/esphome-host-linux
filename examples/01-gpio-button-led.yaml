@@ -1,0 +1,38 @@
+# Phase 1 smoke test: linux_gpio binary_sensor + switch.
+#
+# Wiring (BCM numbering):
+#   - Button: GPIO17 (header pin 11) to GND, internal pull-up.
+#   - LED:    GPIO27 (header pin 13) through ~330 ohm resistor to GND.
+#
+# Run with: esphome run 01-gpio-button-led.yaml
+
+esphome:
+  name: pi-host-test
+  friendly_name: Pi Host Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+linux_gpio:
+
+api:
+logger:
+  level: DEBUG
+
+binary_sensor:
+  - platform: gpio
+    name: "Test Button"
+    pin:
+      number: 17
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+
+switch:
+  - platform: gpio
+    name: "Test LED"
+    pin: 27

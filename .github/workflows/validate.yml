@@ -1,0 +1,48 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  esphome-config:
+    name: esphome config (mac-fast path)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --upgrade pip
+      - run: pip install esphome
+      - name: Validate all example YAMLs
+        run: |
+          set -e
+          for f in examples/*.yaml; do
+            echo "::group::$f"
+            esphome config "$f"
+            echo "::endgroup::"
+          done
+
+  esphome-compile-host:
+    name: esphome compile (Linux host binary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liblgpio-dev libgpiod-dev build-essential
+      - run: pip install --upgrade pip
+      - run: pip install esphome
+      - name: Compile each example for host target
+        run: |
+          set -e
+          for f in examples/*.yaml; do
+            echo "::group::compile $f"
+            esphome -s name_add_mac_suffix false compile "$f"
+            echo "::endgroup::"
+          done

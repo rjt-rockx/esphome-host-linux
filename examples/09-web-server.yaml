@@ -1,0 +1,49 @@
+# Upstream web_server:, unmodified, running on host.
+# Our shadow web_server_base external component provides an
+# AsyncWebServer shim implemented on POSIX sockets so this works.
+
+esphome:
+  name: pi-web-test
+  friendly_name: Pi Web Server Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+
+api:
+logger:
+  level: DEBUG
+
+web_server:
+  port: 8080
+  version: 3
+  include_internal: true
+
+sensor:
+  - platform: template
+    name: "Random Number"
+    id: rand_sensor
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return rand() % 100;
+
+binary_sensor:
+  - platform: template
+    name: "Even Second"
+    id: even_second
+    lambda: |-
+      return (esphome::millis() / 1000) % 2 == 0;
+
+switch:
+  - platform: template
+    name: "Demo Switch"
+    id: demo_switch
+    optimistic: true
+    turn_on_action:
+      - logger.log: "Demo switch ON"
+    turn_off_action:
+      - logger.log: "Demo switch OFF"
