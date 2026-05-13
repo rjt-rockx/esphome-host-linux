@@ -3,13 +3,14 @@ from pathlib import Path
 import esphome.codegen as cg
 from esphome.components import i2c as _upstream_i2c
 import esphome.config_validation as cv
+from esphome import final_validate as fv
 from esphome.const import CONF_ID, CONF_SCAN
 from esphome.core import CORE, CoroPriority, coroutine_with_priority
 from esphome.helpers import copy_file_if_changed
 
-CODEOWNERS = ["@rjt"]
+CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
-AUTO_LOAD = ["i2c", "linux_compat"]
+AUTO_LOAD = ["i2c"]
 MULTI_CONF = True
 
 CONF_DEVICE = "device"
@@ -75,6 +76,25 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_SCAN, default=True): cv.boolean,
     }
 ).extend(cv.COMPONENT_SCHEMA)
+
+
+def _final_validate(config):
+    """If upstream components that need our host-side shims are present but
+    linux_compat isn't loaded, fail config validation with a clear hint
+    rather than letting the linker fail later with a vtable error."""
+    if not CORE.is_host:
+        return config
+    full = fv.full_config.get()
+    if "mcp23xxx_base" in CORE.loaded_integrations and "linux_compat" not in full:
+        raise cv.Invalid(
+            "MCP23xxx GPIO expanders on the host platform need the `linux_compat:` "
+            "component loaded to supply missing upstream symbol definitions. "
+            "Add an empty `linux_compat:` block to your config."
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 def _ensure_host_patch_script():

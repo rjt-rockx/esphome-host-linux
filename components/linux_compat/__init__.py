@@ -7,12 +7,15 @@ upstream symbol definitions, header-only workarounds, etc. Each .cpp in this
 directory guards itself with USE_HOST and __has_include so the file compiles
 to nothing if the upstream component it patches over isn't in the build.
 
-Auto-loaded by other linux_* components. Not meant to be configured directly.
+Opt-in only: users add `linux_compat:` to their YAML when they hit a build
+that needs the shims (e.g. MCP23xxx GPIO expanders on host). Not auto-loaded
+because most setups don't need it and it shouldn't sit in the compile path
+of users who don't use the patched-around components.
 """
 
 import esphome.config_validation as cv
 
-CODEOWNERS = ["@rjt"]
+CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
 
 CONFIG_SCHEMA = cv.Schema({})

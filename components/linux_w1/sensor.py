@@ -8,7 +8,7 @@ from esphome.const import (
     UNIT_CELSIUS,
 )
 
-CODEOWNERS = ["@rjt"]
+CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
 
 linux_w1_ns = cg.esphome_ns.namespace("linux_w1")

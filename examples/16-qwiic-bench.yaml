@@ -39,6 +39,11 @@ linux_i2c:
   id: bus_a
   device: /dev/i2c-1
 
+# Required because mcp23017 is in this config: linux_compat ships the
+# missing-on-host virtual definitions for MCP23XXXBase. Validation will
+# yell at you if you forget it.
+linux_compat:
+
 seesaw:
   address: 0x36
 

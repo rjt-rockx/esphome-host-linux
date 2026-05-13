@@ -15,7 +15,7 @@ from esphome.const import (
     CONF_PULLUP,
 )
 
-CODEOWNERS = ["@rjt"]
+CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
 
 _LOGGER = logging.getLogger(__name__)

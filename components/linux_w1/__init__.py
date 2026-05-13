@@ -1,2 +1,2 @@
-CODEOWNERS = ["@rjt"]
+CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]

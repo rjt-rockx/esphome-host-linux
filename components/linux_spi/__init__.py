@@ -4,9 +4,9 @@ import esphome.config_validation as cv
 from esphome.const import CONF_ID
 from esphome.core import CORE, CoroPriority, coroutine_with_priority
 
-CODEOWNERS = ["@rjt"]
+CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
-AUTO_LOAD = ["spi", "linux_compat"]
+AUTO_LOAD = ["spi"]
 MULTI_CONF = True
 
 CONF_DEVICE = "device"
