@@ -32,6 +32,65 @@
 // so those compile unchanged on host.
 using esp_bt_uuid_t = esphome::esp32_ble::esp_bt_uuid_t;
 
+// --- Portable stand-ins for ESP-IDF GATT symbols that survive in GATT-client/
+// server consumer signatures. Values match ESP-IDF numerics so existing
+// bit-tests and (== ESP_GATT_OK) comparisons in stock components are correct.
+// These are real, honestly-typed host values — NOT an emulation of the IDF
+// event model (the native BLEGattHost drives BlueZ directly). Global scope +
+// per-symbol #ifndef so they coexist with anything else providing them.
+#ifndef ESP_OK
+#define ESP_OK 0
+#endif
+using esp_err_t = int;
+namespace esphome {
+namespace esp32_ble_tracker {
+const char *esp_err_to_name(esp_err_t err);  // small table; falls back to "host-err(N)"
+}  // namespace esp32_ble_tracker
+}  // namespace esphome
+// esp_err_to_name is also referenced unqualified by some consumers.
+using esphome::esp32_ble_tracker::esp_err_to_name;
+
+// esp_gatt_status_t — the proxy forwards these to Home Assistant; numerics MUST
+// equal ESP-IDF's esp_gatt_status_t.
+using esp_gatt_status_t = int;
+enum {
+  ESP_GATT_OK = 0x0,
+  ESP_GATT_INVALID_HANDLE = 0x01,
+  ESP_GATT_READ_NOT_PERMIT = 0x02,
+  ESP_GATT_WRITE_NOT_PERMIT = 0x03,
+  ESP_GATT_INSUF_AUTHENTICATION = 0x05,
+  ESP_GATT_REQ_NOT_SUPPORTED = 0x06,
+  ESP_GATT_INVALID_OFFSET = 0x07,
+  ESP_GATT_INSUF_AUTHORIZATION = 0x08,
+  ESP_GATT_NOT_FOUND = 0x0a,
+  ESP_GATT_INVALID_ATTR_LEN = 0x0d,
+  ESP_GATT_INSUF_ENCRYPTION = 0x0f,
+  ESP_GATT_NO_RESOURCES = 0x80,
+  ESP_GATT_ERROR = 0x85,
+  ESP_GATT_CONN_TIMEOUT = 0x93,
+  ESP_GATT_NOT_CONNECTED = 0x9f,
+  ESP_GATT_MAX_ATTR_LEN = 600,
+};
+
+// esp_gatt_char_prop_t — portable bitmask; values == ESP-IDF.
+using esp_gatt_char_prop_t = uint8_t;
+enum {
+  ESP_GATT_CHAR_PROP_BIT_BROADCAST = 0x01,
+  ESP_GATT_CHAR_PROP_BIT_READ = 0x02,
+  ESP_GATT_CHAR_PROP_BIT_WRITE_NR = 0x04,
+  ESP_GATT_CHAR_PROP_BIT_WRITE = 0x08,
+  ESP_GATT_CHAR_PROP_BIT_NOTIFY = 0x10,
+  ESP_GATT_CHAR_PROP_BIT_INDICATE = 0x20,
+  ESP_GATT_CHAR_PROP_BIT_AUTH = 0x40,
+  ESP_GATT_CHAR_PROP_BIT_EXT_PROP = 0x80,
+};
+
+// Write-type + auth-req enums still named in unported am43/automation bodies.
+using esp_gatt_write_type_t = int;
+enum { ESP_GATT_WRITE_TYPE_NO_RSP = 1, ESP_GATT_WRITE_TYPE_RSP = 2 };
+using esp_gatt_auth_req_t = int;
+enum { ESP_GATT_AUTH_REQ_NONE = 0 };
+
 namespace esphome {
 namespace esp32_ble_tracker {
 

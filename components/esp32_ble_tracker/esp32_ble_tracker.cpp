@@ -222,6 +222,37 @@ uint64_t ESPBTDevice::address_uint64() const {
   return v;
 }
 
+const char *esp_err_to_name(esp_err_t err) {
+  switch (err) {
+    case ESP_OK:
+      return "ESP_OK";
+    case ESP_GATT_NOT_CONNECTED:
+      return "NOT_CONNECTED";
+    case ESP_GATT_NOT_FOUND:
+      return "NOT_FOUND";
+    case ESP_GATT_WRITE_NOT_PERMIT:
+      return "WRITE_NOT_PERMITTED";
+    case ESP_GATT_READ_NOT_PERMIT:
+      return "READ_NOT_PERMITTED";
+    case ESP_GATT_INSUF_AUTHORIZATION:
+      return "INSUF_AUTHORIZATION";
+    case ESP_GATT_INVALID_OFFSET:
+      return "INVALID_OFFSET";
+    case ESP_GATT_INVALID_ATTR_LEN:
+      return "INVALID_ATTR_LEN";
+    case ESP_GATT_REQ_NOT_SUPPORTED:
+      return "REQ_NOT_SUPPORTED";
+    case ESP_GATT_ERROR:
+      return "GATT_ERROR";
+    default: {
+      // Not reentrant, but only used for one-shot log lines.
+      static char buf[20];
+      std::snprintf(buf, sizeof(buf), "host-err(%d)", err);
+      return buf;
+    }
+  }
+}
+
 const char *client_state_to_string(ClientState state) {
   switch (state) {
     case ClientState::INIT:

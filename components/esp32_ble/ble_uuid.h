@@ -5,8 +5,10 @@
 // of esp32_ble_tracker to compile and operate on Linux.
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <span>
 #include <string>
 
 namespace esphome {
@@ -69,6 +71,14 @@ class ESPBTUUID {
   static ESPBTUUID from_uuid_str(const char *s);
   static ESPBTUUID from_uuid_str(const std::string &s) { return from_uuid_str(s.c_str()); }
   static ESPBTUUID from_raw(const std::string &s) { return from_raw(s.c_str(), s.size()); }
+  // Build from the esp_bt_uuid_t union form (GATT server / advertising codegen).
+  static ESPBTUUID from_uuid(const esp_bt_uuid_t &uuid) {
+    if (uuid.len == ESP_UUID_LEN_16)
+      return from_uint16(uuid.uuid.uuid16);
+    if (uuid.len == ESP_UUID_LEN_32)
+      return from_uint32(uuid.uuid.uuid32);
+    return from_raw(uuid.uuid.uuid128);  // already LSB-first like raw_
+  }
   static ESPBTUUID from_raw(std::initializer_list<uint8_t> data) {
     ESPBTUUID u;
     u.len_ = static_cast<uint8_t>(data.size() <= 16 ? data.size() : 16);
@@ -89,6 +99,41 @@ class ESPBTUUID {
       std::memcpy(u.uuid.uuid128, this->raw_, 16);
     }
     return u;
+  }
+
+  // Expand to the full 128-bit form using the Bluetooth Base UUID
+  // (0000xxxx-0000-1000-8000-00805F9B34FB) for 16/32-bit UUIDs. Result raw_ is
+  // LSB-first (matching from_raw). Used by GATT-server advertising + UUID blobs.
+  ESPBTUUID as_128bit() const {
+    if (this->len_ == ESP_UUID_LEN_128)
+      return *this;
+    // Base UUID in LSB-first byte order (reverse of 00000000-0000-1000-8000-00805F9B34FB):
+    static const uint8_t base_lsb[16] = {0xFB, 0x34, 0x9B, 0x5F, 0x80, 0x00, 0x00, 0x80,
+                                         0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    ESPBTUUID u;
+    u.len_ = 16;
+    std::memcpy(u.raw_, base_lsb, 16);
+    // The 16/32-bit value occupies bytes 12..15 (the big-endian high word),
+    // which in LSB-first storage are raw_[12..15] = value little-endian.
+    uint32_t v = (this->len_ == ESP_UUID_LEN_16) ? this->get_16bit() : this->get_32bit();
+    u.raw_[12] = v & 0xff;
+    u.raw_[13] = (v >> 8) & 0xff;
+    u.raw_[14] = (v >> 16) & 0xff;
+    u.raw_[15] = (v >> 24) & 0xff;
+    return u;
+  }
+
+  // Canonical lowercase "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" into a caller
+  // buffer (no heap). Used to emit the BlueZ UUID property string.
+  static constexpr size_t UUID_STR_LEN = 37;  // 36 chars + NUL
+  const char *to_str(std::span<char, UUID_STR_LEN> output) const {
+    ESPBTUUID full = this->as_128bit();
+    // full.raw_ is LSB-first; canonical string is big-endian (raw_[15] first).
+    const uint8_t *r = full.raw_;
+    std::snprintf(output.data(), output.size(),
+                  "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", r[15], r[14], r[13],
+                  r[12], r[11], r[10], r[9], r[8], r[7], r[6], r[5], r[4], r[3], r[2], r[1], r[0]);
+    return output.data();
   }
 
   uint8_t length() const { return this->len_; }
