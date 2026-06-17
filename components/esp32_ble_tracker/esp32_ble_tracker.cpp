@@ -222,6 +222,26 @@ uint64_t ESPBTDevice::address_uint64() const {
   return v;
 }
 
+const char *client_state_to_string(ClientState state) {
+  switch (state) {
+    case ClientState::INIT:
+      return "INIT";
+    case ClientState::DISCONNECTING:
+      return "DISCONNECTING";
+    case ClientState::IDLE:
+      return "IDLE";
+    case ClientState::DISCOVERED:
+      return "DISCOVERED";
+    case ClientState::CONNECTING:
+      return "CONNECTING";
+    case ClientState::CONNECTED:
+      return "CONNECTED";
+    case ClientState::ESTABLISHED:
+      return "ESTABLISHED";
+  }
+  return "UNKNOWN";
+}
+
 float ESP32BLETracker::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
 
 void ESP32BLETracker::setup() {

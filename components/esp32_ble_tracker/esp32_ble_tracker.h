@@ -150,6 +150,63 @@ class ESPBTDeviceListener {
   ESP32BLETracker *parent_{nullptr};
 };
 
+// Mirrors upstream esp32_ble_tracker::ClientState so esp32_ble_client and
+// consumers see the same state machine.
+enum class ClientState : uint8_t {
+  INIT,
+  DISCONNECTING,
+  IDLE,
+  DISCOVERED,
+  CONNECTING,
+  CONNECTED,
+  ESTABLISHED,
+};
+
+const char *client_state_to_string(ClientState state);
+
+enum class ConnectionType : uint8_t {
+  V1,
+  V3_WITH_CACHE,
+  V3_WITHOUT_CACHE,
+};
+
+/// Base class for GATT clients the tracker drives. On host the GATT transport
+/// is BlueZ D-Bus (a native esp32_ble_client::BLEClientBase implements connect/
+/// discover/read/write/notify against org.bluez — no ESP-IDF emulation). The
+/// tracker only needs the connection-lifecycle contract below; it promotes a
+/// DISCOVERED client to CONNECTING by calling connect(), and reads state().
+class ESPBTClient : public ESPBTDeviceListener {
+ public:
+  virtual void connect() = 0;
+  virtual void disconnect() = 0;
+  bool disconnect_pending() const { return this->want_disconnect_; }
+  void cancel_pending_disconnect() { this->want_disconnect_ = false; }
+
+  virtual void set_state(ClientState st) {
+    this->set_state_internal_(st);
+    if (st == ClientState::IDLE) {
+      this->want_disconnect_ = false;
+    }
+  }
+  ClientState state() const { return this->state_; }
+
+  void set_tracker_state_version(uint8_t *version) { this->tracker_state_version_ = version; }
+
+  uint8_t app_id;
+
+ protected:
+  void set_state_internal_(ClientState st) {
+    this->state_ = st;
+    if (this->tracker_state_version_ != nullptr) {
+      (*this->tracker_state_version_)++;
+    }
+  }
+
+  bool want_disconnect_{false};
+  ClientState state_{ClientState::INIT};
+  uint8_t *tracker_state_version_{nullptr};
+};
+
 class ESP32BLETracker : public Component {
  public:
   void set_hci_device(std::string name) { this->hci_device_name_ = std::move(name); }
