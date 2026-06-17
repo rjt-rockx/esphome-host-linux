@@ -12,6 +12,21 @@
 namespace esphome {
 namespace esp32_ble {
 
+// Minimal stand-in for ESP-IDF's esp_bt_uuid_t, so consumers (e.g. thermopro_ble)
+// that call ESPBTUUID::get_uuid() and read uuid.uuid.uuid16 compile on host.
+constexpr uint16_t ESP_UUID_LEN_16 = 2;
+constexpr uint16_t ESP_UUID_LEN_32 = 4;
+constexpr uint16_t ESP_UUID_LEN_128 = 16;
+
+struct esp_bt_uuid_t {
+  uint16_t len;
+  union {
+    uint16_t uuid16;
+    uint32_t uuid32;
+    uint8_t uuid128[16];
+  } uuid;
+};
+
 class ESPBTUUID {
  public:
   ESPBTUUID() : len_(0) { std::memset(this->raw_, 0, sizeof(this->raw_)); }
@@ -58,6 +73,21 @@ class ESPBTUUID {
     ESPBTUUID u;
     u.len_ = static_cast<uint8_t>(data.size() <= 16 ? data.size() : 16);
     std::memcpy(u.raw_, data.begin(), u.len_);
+    return u;
+  }
+
+  // Build an esp_bt_uuid_t view (used by parsers like thermopro_ble that read
+  // .uuid.uuid16). raw_ is stored LSB-first, matching the union's native order.
+  esp_bt_uuid_t get_uuid() const {
+    esp_bt_uuid_t u{};
+    u.len = this->len_;
+    if (this->len_ == ESP_UUID_LEN_16) {
+      u.uuid.uuid16 = this->get_16bit();
+    } else if (this->len_ == ESP_UUID_LEN_32) {
+      u.uuid.uuid32 = this->get_32bit();
+    } else {
+      std::memcpy(u.uuid.uuid128, this->raw_, 16);
+    }
     return u;
   }
 

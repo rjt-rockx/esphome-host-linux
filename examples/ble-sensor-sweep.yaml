@@ -1,0 +1,48 @@
+# Full parsed *_ble consumer sweep on the host (D-Bus) backend. Compile-verifies
+# the shadow tracker's API surface is sufficient for the whole sensor family.
+# Parity needs the physical peripheral per device; MACs/bindkeys are placeholders.
+esphome:
+  name: ble-sweep
+  platformio_options:
+    board_build.cmake_extra_args: >-
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+host:
+logger:
+external_components:
+  - source: {type: local, path: ../components}
+esp32_ble_tracker:
+xiaomi_ble:
+ruuvi_ble:
+mopeka_ble:
+airthings_ble:
+binary_sensor:
+  - platform: ble_presence
+    name: presence
+    mac_address: A4:C1:38:00:00:00
+sensor:
+  - platform: ble_rssi
+    name: rssi
+    mac_address: A4:C1:38:00:00:00
+  - platform: atc_mithermometer
+    mac_address: A4:C1:38:00:00:01
+    temperature: {name: atc t}
+  - platform: pvvx_mithermometer
+    mac_address: A4:C1:38:00:00:02
+    temperature: {name: pvvx t}
+  - platform: thermopro_ble
+    mac_address: A4:C1:38:00:00:03
+    temperature: {name: tp t}
+  - platform: b_parasite
+    mac_address: A4:C1:38:00:00:04
+    moisture: {name: bp m}
+  - platform: xiaomi_lywsd03mmc
+    mac_address: A4:C1:38:00:00:05
+    bindkey: "0123456789abcdef0123456789abcdef"
+    temperature: {name: xiaomi t}
+  - platform: ruuvitag
+    mac_address: A4:C1:38:00:00:06
+    temperature: {name: ruuvi t}
+text_sensor:
+  - platform: ble_scanner
+    name: scan json

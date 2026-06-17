@@ -175,6 +175,9 @@ async def to_code(config):
         # D-Bus (default) backend links libsystemd for sd-bus. Always linked so
         # both backends are available; the raw-HCI path uses no extra libs.
         cg.add_build_flag("-lsystemd")
+        # Some advertisement parsers (e.g. xiaomi_ble) decrypt payloads with
+        # mbedtls AES-CCM. Link libmbedcrypto so they build/run on host.
+        cg.add_build_flag("-lmbedcrypto")
         _ensure_ble_patch_script()
 
 

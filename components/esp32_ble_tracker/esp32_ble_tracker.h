@@ -27,6 +27,11 @@
 // (this component only builds for the host platform).
 #include <systemd/sd-bus.h>
 
+// On ESP-IDF `esp_bt_uuid_t` is a global C typedef; some consumers (e.g.
+// thermopro_ble) reference it unqualified. Expose our stand-in at global scope
+// so those compile unchanged on host.
+using esp_bt_uuid_t = esphome::esp32_ble::esp_bt_uuid_t;
+
 namespace esphome {
 namespace esp32_ble_tracker {
 
@@ -39,9 +44,13 @@ using ESPBTUUID = esp32_ble::ESPBTUUID;
 // size and call address_str_to() compile unchanged.
 static constexpr size_t MAC_ADDRESS_PRETTY_BUFFER_SIZE = 18;
 
+// Matches upstream: the manufacturer/service-data byte payload type used by
+// some parsers (e.g. ruuvi_ble) as `esp32_ble_tracker::adv_data_t`.
+using adv_data_t = std::vector<uint8_t>;
+
 struct ServiceData {
   ESPBTUUID uuid;
-  std::vector<uint8_t> data;
+  adv_data_t data;
 };
 
 class ESPBLEiBeacon {
