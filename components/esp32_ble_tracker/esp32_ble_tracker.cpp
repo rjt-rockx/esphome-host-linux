@@ -13,6 +13,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <systemd/sd-bus.h>
+
 // BlueZ HCI raw socket constants. We can't depend on libbluetooth headers
 // being installed (they often aren't on minimal Pi images), so we inline the
 // pieces we need from <bluetooth/{bluetooth,hci,hci_sock}.h>.
@@ -224,15 +226,25 @@ float ESP32BLETracker::get_setup_priority() const { return setup_priority::AFTER
 
 void ESP32BLETracker::setup() {
   this->stop_thread_ = false;
-  this->scanner_thread_ = std::thread([this] { this->scanner_thread_main_(); });
+  if (this->use_hci_backend_) {
+    this->scanner_thread_ = std::thread([this] { this->scanner_thread_main_(); });
+  } else {
+    this->scanner_thread_ = std::thread([this] { this->dbus_scanner_thread_main_(); });
+  }
 }
 
 void ESP32BLETracker::dump_config() {
-  ESP_LOGCONFIG(TAG, "BLE Tracker (Linux HCI):");
-  ESP_LOGCONFIG(TAG, "  HCI device: %s", this->hci_device_name_.c_str());
-  ESP_LOGCONFIG(TAG, "  Scan interval: %u ms", this->scan_interval_ms_);
-  ESP_LOGCONFIG(TAG, "  Scan window: %u ms", this->scan_window_ms_);
-  ESP_LOGCONFIG(TAG, "  Active scan: %s", this->scan_active_ ? "yes" : "no");
+  if (this->use_hci_backend_) {
+    ESP_LOGCONFIG(TAG, "BLE Tracker (Linux raw HCI):");
+    ESP_LOGCONFIG(TAG, "  HCI device: %s", this->hci_device_name_.c_str());
+    ESP_LOGCONFIG(TAG, "  Scan interval: %u ms", this->scan_interval_ms_);
+    ESP_LOGCONFIG(TAG, "  Scan window: %u ms", this->scan_window_ms_);
+    ESP_LOGCONFIG(TAG, "  Active scan: %s", this->scan_active_ ? "yes" : "no");
+  } else {
+    ESP_LOGCONFIG(TAG, "BLE Tracker (Linux BlueZ D-Bus):");
+    ESP_LOGCONFIG(TAG, "  Adapter: %s", this->hci_device_name_.c_str());
+    ESP_LOGCONFIG(TAG, "  Active scan: %s", this->scan_active_ ? "yes" : "no");
+  }
   ESP_LOGCONFIG(TAG, "  Listeners: %zu", this->listeners_.size());
 }
 
@@ -436,6 +448,308 @@ void ESP32BLETracker::scanner_thread_main_() {
   }
   this->send_le_set_scan_enable_(false);
   this->close_hci_();
+}
+
+// ---------------------------------------------------------------------------
+// BlueZ D-Bus backend (default).
+//
+// Unlike the raw-HCI backend, this talks to bluetoothd over the system bus, so
+// it coexists with anything else using the adapter (e.g. Home Assistant). We
+// ask bluetoothd to discover, then read the *parsed* org.bluez.Device1
+// properties (Address/RSSI/Name/UUIDs/ServiceData/ManufacturerData) and feed
+// them into the same ESPBTDevice/deliver_device_() path the listeners consume.
+//
+// BlueZ does NOT expose the raw advertising PDU here (only decoded fields); for
+// byte-exact raw advertisements use the hci_backend opt-in. See
+// references/ble-host/findings.md §5.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Parse "AA:BB:CC:DD:EE:FF" into address_[] (LSB-first, matching set_address).
+bool parse_bdaddr(const char *str, uint8_t out[6]) {
+  unsigned vals[6];
+  if (std::sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x", &vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5]) != 6)
+    return false;
+  // String is big-endian (MSB first); ESPBTDevice stores LSB-first.
+  for (int i = 0; i < 6; i++)
+    out[i] = static_cast<uint8_t>(vals[5 - i]);
+  return true;
+}
+
+// Read a D-Bus "ay" (array of bytes) at the current message position into vec.
+int read_byte_array(sd_bus_message *m, std::vector<uint8_t> &vec) {
+  const void *data = nullptr;
+  size_t len = 0;
+  int r = sd_bus_message_read_array(m, 'y', &data, &len);
+  if (r < 0)
+    return r;
+  const uint8_t *p = static_cast<const uint8_t *>(data);
+  vec.assign(p, p + len);
+  return 0;
+}
+
+}  // namespace
+
+// Parse a single org.bluez.Device1 property dictionary (a{sv}) that the message
+// is currently positioned to enter, populating `device`. Returns true if at
+// least an Address was found. The message must be positioned at the 'a{sv}'.
+bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &device) {
+  bool have_address = false;
+  int r = sd_bus_message_enter_container(m, 'a', "{sv}");
+  if (r < 0)
+    return false;
+  for (;;) {
+    r = sd_bus_message_enter_container(m, 'e', "sv");
+    if (r <= 0)
+      break;  // 0 = end of array, <0 = error
+    const char *key = nullptr;
+    if (sd_bus_message_read(m, "s", &key) < 0)
+      break;
+
+    if (std::strcmp(key, "Address") == 0) {
+      const char *addr = nullptr;
+      sd_bus_message_read(m, "v", "s", &addr);
+      uint8_t bd[6];
+      if (addr != nullptr && parse_bdaddr(addr, bd)) {
+        device.set_address(bd);
+        have_address = true;
+      }
+    } else if (std::strcmp(key, "Name") == 0) {
+      const char *name = nullptr;
+      sd_bus_message_read(m, "v", "s", &name);
+      if (name != nullptr)
+        device.set_name(name);
+    } else if (std::strcmp(key, "RSSI") == 0) {
+      int16_t rssi = 0;
+      sd_bus_message_read(m, "v", "n", &rssi);
+      device.set_rssi(static_cast<int8_t>(rssi));
+    } else if (std::strcmp(key, "TxPower") == 0) {
+      int16_t tx = 0;
+      sd_bus_message_read(m, "v", "n", &tx);
+      device.add_tx_power(static_cast<int8_t>(tx));
+    } else if (std::strcmp(key, "Appearance") == 0) {
+      uint16_t app = 0;
+      sd_bus_message_read(m, "v", "q", &app);
+      device.set_appearance(app);
+    } else if (std::strcmp(key, "UUIDs") == 0) {
+      sd_bus_message_enter_container(m, 'v', "as");
+      sd_bus_message_enter_container(m, 'a', "s");
+      const char *uuid = nullptr;
+      while (sd_bus_message_read(m, "s", &uuid) > 0) {
+        if (uuid != nullptr)
+          device.add_service_uuid(ESPBTUUID::from_uuid_str(uuid));
+      }
+      sd_bus_message_exit_container(m);
+      sd_bus_message_exit_container(m);
+    } else if (std::strcmp(key, "ManufacturerData") == 0) {
+      // v -> a{qv}, value variant is 'ay'
+      sd_bus_message_enter_container(m, 'v', "a{qv}");
+      sd_bus_message_enter_container(m, 'a', "{qv}");
+      for (;;) {
+        r = sd_bus_message_enter_container(m, 'e', "qv");
+        if (r <= 0)
+          break;
+        uint16_t company = 0;
+        sd_bus_message_read(m, "q", &company);
+        sd_bus_message_enter_container(m, 'v', "ay");
+        ServiceData sd;
+        sd.uuid = ESPBTUUID::from_uint16(company);
+        // Manufacturer data is stored company-LE-prefixed so iBeacon parsing
+        // (from_manufacturer_data) can read company id from data[0..1].
+        sd.data.push_back(static_cast<uint8_t>(company & 0xff));
+        sd.data.push_back(static_cast<uint8_t>(company >> 8));
+        std::vector<uint8_t> payload;
+        read_byte_array(m, payload);
+        sd.data.insert(sd.data.end(), payload.begin(), payload.end());
+        device.add_manufacturer_data(std::move(sd));
+        sd_bus_message_exit_container(m);  // v
+        sd_bus_message_exit_container(m);  // e
+      }
+      sd_bus_message_exit_container(m);  // a
+      sd_bus_message_exit_container(m);  // v
+    } else if (std::strcmp(key, "ServiceData") == 0) {
+      // v -> a{sv}, key is UUID string, value variant is 'ay'
+      sd_bus_message_enter_container(m, 'v', "a{sv}");
+      sd_bus_message_enter_container(m, 'a', "{sv}");
+      for (;;) {
+        r = sd_bus_message_enter_container(m, 'e', "sv");
+        if (r <= 0)
+          break;
+        const char *uuid = nullptr;
+        sd_bus_message_read(m, "s", &uuid);
+        sd_bus_message_enter_container(m, 'v', "ay");
+        ServiceData sd;
+        if (uuid != nullptr)
+          sd.uuid = ESPBTUUID::from_uuid_str(uuid);
+        read_byte_array(m, sd.data);
+        device.add_service_data(std::move(sd));
+        sd_bus_message_exit_container(m);  // v
+        sd_bus_message_exit_container(m);  // e
+      }
+      sd_bus_message_exit_container(m);  // a
+      sd_bus_message_exit_container(m);  // v
+    } else {
+      // Skip the variant value of any property we don't care about.
+      sd_bus_message_skip(m, "v");
+    }
+    sd_bus_message_exit_container(m);  // dict entry
+  }
+  sd_bus_message_exit_container(m);  // a{sv}
+  return have_address;
+}
+
+void ESP32BLETracker::dbus_scanner_thread_main_() {
+  sd_bus *bus = nullptr;
+  int r = sd_bus_open_system(&bus);
+  if (r < 0) {
+    ESP_LOGW(TAG, "D-Bus: cannot open system bus: %s", std::strerror(-r));
+    return;
+  }
+
+  std::string adapter_path = "/org/bluez/" + this->hci_device_name_;
+
+  // SetDiscoveryFilter: LE transport, keep duplicate adverts so we see the
+  // advertisement firehose (otherwise BlueZ coalesces unchanged data).
+  {
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    sd_bus_message *msg = nullptr;
+    r = sd_bus_message_new_method_call(bus, &msg, "org.bluez", adapter_path.c_str(), "org.bluez.Adapter1",
+                                       "SetDiscoveryFilter");
+    if (r >= 0) {
+      sd_bus_message_open_container(msg, 'a', "{sv}");
+      sd_bus_message_open_container(msg, 'e', "sv");
+      sd_bus_message_append(msg, "s", "Transport");
+      sd_bus_message_append(msg, "v", "s", "le");
+      sd_bus_message_close_container(msg);
+      sd_bus_message_open_container(msg, 'e', "sv");
+      sd_bus_message_append(msg, "s", "DuplicateData");
+      sd_bus_message_append(msg, "v", "b", 1);
+      sd_bus_message_close_container(msg);
+      sd_bus_message_close_container(msg);
+      r = sd_bus_call(bus, msg, 0, &err, nullptr);
+      if (r < 0)
+        ESP_LOGW(TAG, "D-Bus: SetDiscoveryFilter failed: %s", err.message ? err.message : std::strerror(-r));
+      sd_bus_error_free(&err);
+      sd_bus_message_unref(msg);
+    }
+  }
+
+  // Subscribe to InterfacesAdded (new devices) and PropertiesChanged (updates).
+  // The handlers are member-function trampolines via a static dispatcher.
+  sd_bus_slot *slot_added = nullptr;
+  sd_bus_slot *slot_changed = nullptr;
+  sd_bus_match_signal(bus, &slot_added, "org.bluez", nullptr, "org.freedesktop.DBus.ObjectManager",
+                      "InterfacesAdded", &ESP32BLETracker::on_interfaces_added_, this);
+  sd_bus_match_signal(bus, &slot_changed, "org.bluez", nullptr, "org.freedesktop.DBus.Properties",
+                      "PropertiesChanged", &ESP32BLETracker::on_properties_changed_, this);
+
+  // StartDiscovery.
+  {
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    r = sd_bus_call_method(bus, "org.bluez", adapter_path.c_str(), "org.bluez.Adapter1", "StartDiscovery", &err,
+                           nullptr, "");
+    if (r < 0) {
+      ESP_LOGW(TAG, "D-Bus: StartDiscovery failed: %s. Is bluetoothd running and the adapter powered?",
+               err.message ? err.message : std::strerror(-r));
+      sd_bus_error_free(&err);
+      sd_bus_slot_unref(slot_added);
+      sd_bus_slot_unref(slot_changed);
+      sd_bus_unref(bus);
+      return;
+    }
+    sd_bus_error_free(&err);
+  }
+
+  this->hci_ok_ = true;
+  ESP_LOGI(TAG, "BLE scan started via BlueZ D-Bus on %s", this->hci_device_name_.c_str());
+
+  while (!this->stop_thread_.load()) {
+    r = sd_bus_process(bus, nullptr);
+    if (r < 0) {
+      ESP_LOGW(TAG, "D-Bus process error: %s", std::strerror(-r));
+      break;
+    }
+    if (r > 0)
+      continue;  // more work queued, process it before waiting
+    sd_bus_wait(bus, 200000);  // 200 ms, so stop_thread_ is checked promptly
+  }
+
+  {
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    sd_bus_call_method(bus, "org.bluez", adapter_path.c_str(), "org.bluez.Adapter1", "StopDiscovery", &err, nullptr,
+                       "");
+    sd_bus_error_free(&err);
+  }
+  sd_bus_slot_unref(slot_added);
+  sd_bus_slot_unref(slot_changed);
+  sd_bus_unref(bus);
+}
+
+// InterfacesAdded(o path, a{sa{sv}} interfaces) — a new device appeared. Find
+// the org.bluez.Device1 entry and parse its properties.
+int ESP32BLETracker::on_interfaces_added_(sd_bus_message *m, void *userdata, sd_bus_error * /*ret_error*/) {
+  auto *self = static_cast<ESP32BLETracker *>(userdata);
+  const char *obj_path = nullptr;
+  if (sd_bus_message_read(m, "o", &obj_path) < 0)
+    return 0;
+  if (sd_bus_message_enter_container(m, 'a', "{sa{sv}}") < 0)
+    return 0;
+  for (;;) {
+    int r = sd_bus_message_enter_container(m, 'e', "sa{sv}");
+    if (r <= 0)
+      break;
+    const char *iface = nullptr;
+    sd_bus_message_read(m, "s", &iface);
+    if (iface != nullptr && std::strcmp(iface, "org.bluez.Device1") == 0) {
+      ESPBTDevice device;
+      if (self->parse_device1_props_(m, device))
+        self->deliver_device_(std::move(device));
+    } else {
+      sd_bus_message_skip(m, "a{sv}");
+    }
+    sd_bus_message_exit_container(m);  // dict entry
+  }
+  sd_bus_message_exit_container(m);
+  return 0;
+}
+
+// PropertiesChanged(s iface, a{sv} changed, as invalidated) on a device path —
+// an existing device's RSSI / data updated. We only get the changed props, but
+// for ble_rssi/ble_presence that's enough (RSSI + the MAC from the path).
+int ESP32BLETracker::on_properties_changed_(sd_bus_message *m, void *userdata, sd_bus_error * /*ret_error*/) {
+  auto *self = static_cast<ESP32BLETracker *>(userdata);
+  const char *iface = nullptr;
+  if (sd_bus_message_read(m, "s", &iface) < 0)
+    return 0;
+  if (iface == nullptr || std::strcmp(iface, "org.bluez.Device1") != 0)
+    return 0;
+
+  // The device MAC is in the signal's object path: /org/bluez/hciN/dev_AA_BB_..
+  const char *path = sd_bus_message_get_path(m);
+  ESPBTDevice device;
+  bool have_address = false;
+  if (path != nullptr) {
+    const char *dev = std::strstr(path, "/dev_");
+    if (dev != nullptr) {
+      char macbuf[18];
+      // dev_AA_BB_CC_DD_EE_FF -> AA:BB:CC:DD:EE:FF
+      std::snprintf(macbuf, sizeof(macbuf), "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c", dev[5], dev[6], dev[8], dev[9], dev[11],
+                    dev[12], dev[14], dev[15], dev[17], dev[18], dev[20], dev[21]);
+      uint8_t bd[6];
+      if (parse_bdaddr(macbuf, bd)) {
+        device.set_address(bd);
+        have_address = true;
+      }
+    }
+  }
+  if (!have_address)
+    return 0;
+
+  // Reuse the a{sv} parser for the changed-properties dict (same signature).
+  self->parse_device1_props_(m, device);
+  self->deliver_device_(std::move(device));
+  return 0;
 }
 
 }  // namespace esp32_ble_tracker

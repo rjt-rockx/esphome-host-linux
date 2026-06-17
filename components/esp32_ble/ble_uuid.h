@@ -47,6 +47,12 @@ class ESPBTUUID {
   }
   static ESPBTUUID from_raw(const char *data, size_t length);
   static ESPBTUUID from_raw(const char *data) { return from_raw(data, std::strlen(data)); }
+  // Parse a canonical UUID string as BlueZ reports it, e.g.
+  // "0000fdf7-0000-1000-8000-00805f9b34fb" (always 128-bit form). Stored
+  // reversed (LSB-first), matching from_raw_reversed / the as_reversed_hex_array
+  // codegen path so service-UUID comparisons line up.
+  static ESPBTUUID from_uuid_str(const char *s);
+  static ESPBTUUID from_uuid_str(const std::string &s) { return from_uuid_str(s.c_str()); }
   static ESPBTUUID from_raw(const std::string &s) { return from_raw(s.c_str(), s.size()); }
   static ESPBTUUID from_raw(std::initializer_list<uint8_t> data) {
     ESPBTUUID u;

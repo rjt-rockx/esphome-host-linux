@@ -20,6 +20,11 @@
 #include <thread>
 #include <vector>
 
+// sd-bus types appear in the D-Bus backend method signatures below. Include the
+// real header so they resolve to the genuine ::sd_bus_message / ::sd_bus_error
+// (this component only builds for the host platform).
+#include <systemd/sd-bus.h>
+
 namespace esphome {
 namespace esp32_ble_tracker {
 
@@ -129,6 +134,10 @@ class ESP32BLETracker : public Component {
   void set_scan_window_ms(uint32_t ms) { this->scan_window_ms_ = ms; }
   void set_scan_active(bool active) { this->scan_active_ = active; }
   void set_scan_continuous(bool cont) { this->scan_continuous_ = cont; }
+  // Backend select: default is BlueZ D-Bus (coexists with bluetoothd/HA).
+  // hci_backend=true uses the raw-HCI scanner, which needs an adapter the
+  // daemon isn't managing (see references/ble-host CHARTER §2 item T).
+  void set_use_hci_backend(bool use_hci) { this->use_hci_backend_ = use_hci; }
 
   void setup() override;
   void loop() override;
@@ -141,12 +150,20 @@ class ESP32BLETracker : public Component {
   }
 
  protected:
+  // raw-HCI backend (opt-in)
   void scanner_thread_main_();
   bool open_hci_();
   void close_hci_();
   bool send_le_set_scan_params_();
   bool send_le_set_scan_enable_(bool enable);
   void handle_le_meta_event_(const uint8_t *evt, size_t len);
+
+  // D-Bus / BlueZ backend (default)
+  void dbus_scanner_thread_main_();
+  bool parse_device1_props_(::sd_bus_message *m, ESPBTDevice &device);
+  static int on_interfaces_added_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
+  static int on_properties_changed_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
+
   void deliver_device_(ESPBTDevice device);
 
   std::string hci_device_name_{"hci0"};
@@ -155,6 +172,7 @@ class ESP32BLETracker : public Component {
   uint32_t scan_window_ms_{30};
   bool scan_active_{true};
   bool scan_continuous_{true};
+  bool use_hci_backend_{false};
 
   std::vector<ESPBTDeviceListener *> listeners_;
 

@@ -1,16 +1,14 @@
-# BLE scanning on Linux. Default backend is BlueZ over D-Bus: it talks to the
-# running bluetoothd, needs no extra capabilities, and coexists with anything
-# else using the adapter (e.g. Home Assistant). Just make sure bluetoothd is
-# running and the adapter is powered.
-#
-# For byte-exact raw advertisements (or a dedicated adapter with no bluetoothd),
-# set `hci_backend: true` under esp32_ble_tracker. That path uses raw HCI sockets
-# and needs cap_net_admin + cap_net_raw on the binary; grant once after compile:
+# BLE scanning via Linux HCI raw sockets. The compiled binary needs
+# cap_net_admin + cap_net_raw to talk to /dev/bluetooth. After each
+# `esphome compile`, grant them once:
 #
 #   scripts/pi-bless-binary.sh .esphome/build/pi-ble/.pioenvs/pi-ble/program
+#
+# (or run with sudo, but capabilities survive across logins and avoid full
+# root privilege).
 
 esphome:
-  name: pi-ble
+  name: pi-ble-beacon
   platformio_options:
     board_build.cmake_extra_args: >-
       -DCMAKE_C_COMPILER_LAUNCHER=ccache
@@ -39,10 +37,10 @@ esp32_ble_tracker:
 binary_sensor:
   - platform: ble_presence
     name: "BLE Presence Test"
-    mac_address: 0C:4E:A0:86:D2:72  # a nearby Govee humidity sensor
+    mac_address: 40:4C:CA:57:8B:76  # C6 beacon (ground truth)
     timeout: 1min
 
 sensor:
   - platform: ble_rssi
     name: "BLE RSSI Test"
-    mac_address: 0C:4E:A0:86:D2:72
+    mac_address: 40:4C:CA:57:8B:76  # C6 beacon (ground truth)

@@ -18,6 +18,40 @@ ESPBTUUID ESPBTUUID::from_raw(const char *data, size_t length) {
   return u;
 }
 
+ESPBTUUID ESPBTUUID::from_uuid_str(const char *s) {
+  // Collect hex nibbles, ignoring dashes. Expect 32 hex chars (128-bit).
+  uint8_t bytes[16];
+  int nbytes = 0;
+  int hi = -1;
+  for (const char *p = s; *p != '\0' && nbytes < 16; p++) {
+    char c = *p;
+    if (c == '-')
+      continue;
+    int nib;
+    if (c >= '0' && c <= '9')
+      nib = c - '0';
+    else if (c >= 'a' && c <= 'f')
+      nib = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'F')
+      nib = c - 'A' + 10;
+    else
+      break;  // unexpected char
+    if (hi < 0) {
+      hi = nib;
+    } else {
+      bytes[nbytes++] = static_cast<uint8_t>((hi << 4) | nib);
+      hi = -1;
+    }
+  }
+  if (nbytes == 16)
+    return from_raw_reversed(bytes);
+  // Shorter/odd input: store what we have, big-endian, len = nbytes.
+  ESPBTUUID u;
+  u.len_ = static_cast<uint8_t>(nbytes);
+  std::memcpy(u.raw_, bytes, nbytes);
+  return u;
+}
+
 std::string ESPBTUUID::to_string() const {
   char buf[64];
   if (this->len_ == 2) {

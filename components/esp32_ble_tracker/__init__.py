@@ -50,6 +50,7 @@ CONF_SCAN_PARAMETERS = "scan_parameters"
 CONF_WINDOW = "window"
 CONF_ON_SCAN_END = "on_scan_end"
 CONF_HCI_DEVICE = "hci_device"
+CONF_HCI_BACKEND = "hci_backend"
 
 esp32_ble_tracker_ns = cg.esphome_ns.namespace("esp32_ble_tracker")
 ESP32BLETracker = esp32_ble_tracker_ns.class_("ESP32BLETracker", cg.Component)
@@ -108,6 +109,10 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(ESP32BLETracker),
         cv.Optional(CONF_HCI_DEVICE, default="hci0"): cv.string,
+        # Default backend is BlueZ D-Bus (coexists with bluetoothd/HA). Set
+        # hci_backend: true for the raw-HCI scanner (needs an adapter not owned
+        # by bluetoothd; gets byte-exact adverts). See references/ble-host CHARTER.
+        cv.Optional(CONF_HCI_BACKEND, default=False): cv.boolean,
         cv.Optional(CONF_SCAN_PARAMETERS, default={}): cv.All(
             cv.Schema(
                 {
@@ -153,6 +158,7 @@ async def to_code(config):
     await cg.register_component(var, config)
 
     cg.add(var.set_hci_device(config[CONF_HCI_DEVICE]))
+    cg.add(var.set_use_hci_backend(config[CONF_HCI_BACKEND]))
 
     params = config[CONF_SCAN_PARAMETERS]
     cg.add(var.set_scan_duration(int(params[CONF_DURATION].total_seconds)))
@@ -166,6 +172,9 @@ async def to_code(config):
     cg.add_global(esp32_ble_tracker_ns.using)
     if CORE.is_host:
         cg.add_build_flag("-pthread")
+        # D-Bus (default) backend links libsystemd for sd-bus. Always linked so
+        # both backends are available; the raw-HCI path uses no extra libs.
+        cg.add_build_flag("-lsystemd")
         _ensure_ble_patch_script()
 
 
