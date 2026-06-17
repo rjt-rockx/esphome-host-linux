@@ -93,6 +93,28 @@ def _ensure_lwip_stubs(project_dir: Path) -> None:
             p.write_text(content)
 
 
+ESP_IDF_VERSION_H = """\
+#pragma once
+// Host stub for <esp_idf_version.h>. There is no ESP-IDF on the host build, but
+// components like xiaomi_ble include this for version-gated code paths. We
+// report a version < 6.0.0 so they take the mbedtls (not PSA/ESP-IDF) branch,
+// which builds natively on Linux.
+
+#define ESP_IDF_VERSION_VAL(major, minor, patch) ((major) * 10000 + (minor) * 100 + (patch))
+#define ESP_IDF_VERSION_MAJOR 5
+#define ESP_IDF_VERSION_MINOR 5
+#define ESP_IDF_VERSION_PATCH 4
+#define ESP_IDF_VERSION ESP_IDF_VERSION_VAL(5, 5, 4)
+"""
+
+
+def _ensure_esp_idf_version_stub(project_dir: Path) -> None:
+    # Placed on the include root (src/) so `#include <esp_idf_version.h>` finds it.
+    p = project_dir / "src" / "esp_idf_version.h"
+    if not p.exists() or p.read_text() != ESP_IDF_VERSION_H:
+        p.write_text(ESP_IDF_VERSION_H)
+
+
 def _patch_host_ip_address(path: Path) -> None:
     """Upstream's host IPAddress is missing helpers (is_set/is_ip4/...) that
     components like mqtt_client.cpp call on every platform. Drop in
@@ -153,24 +175,35 @@ def _patch_all(_target, _source, _env):
     mqtt_root = components_root / "mqtt"
 
     _ensure_lwip_stubs(project_dir)
+    _ensure_esp_idf_version_stub(project_dir)
     _patch_host_ip_address(components_root / "network" / "ip_address.h")
     _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
 
     # Expand the USE_ESP32 guard to also accept USE_HOST in the BLE consumer
     # components, so stock ESPHome BLE listeners compile against our host-side
     # esp32_ble_tracker shim. These are advertisement-parsing listeners only;
-    # they don't touch ESP-IDF directly. We patch every .h/.cpp present so the
-    # set can grow as we verify more consumers — missing dirs are skipped.
-    ble_consumer_files = [
-        "ble_presence/ble_presence_device.h",
-        "ble_presence/ble_presence_device.cpp",
-        "ble_rssi/ble_rssi_sensor.h",
-        "ble_rssi/ble_rssi_sensor.cpp",
-        "ble_scanner/ble_scanner.h",
-        "ble_scanner/ble_scanner.cpp",
+    # they don't touch ESP-IDF directly. Rather than enumerate every file, walk
+    # the known consumer component dirs and patch any .h/.cpp carrying the guard
+    # — this scales as we verify more consumers. Missing dirs are skipped.
+    ble_consumer_dirs = [
+        "ble_presence",
+        "ble_rssi",
+        "ble_scanner",
+        "xiaomi_ble",
+        "ruuvi_ble",
+        "mopeka_ble",
+        "airthings_ble",
+        "thermopro_ble",
+        "atc_mithermometer",
+        "pvvx_mithermometer",
+        "b_parasite",
     ]
-    for rel in ble_consumer_files:
-        _patch_ble_guard(components_root / rel)
+    for d in ble_consumer_dirs:
+        comp_dir = components_root / d
+        if not comp_dir.is_dir():
+            continue
+        for f in sorted(comp_dir.glob("*.h")) + sorted(comp_dir.glob("*.cpp")):
+            _patch_ble_guard(f)
 
     _patch(
         mqtt_root / "mqtt_client.h",

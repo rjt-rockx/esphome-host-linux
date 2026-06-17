@@ -69,6 +69,22 @@ class ESPBTUUID {
   }
   const uint8_t *raw() const { return this->raw_; }
 
+  // Returns true if the byte pair (data1, data2) appears contiguously in the
+  // UUID, little-endian. Mirrors upstream ESPBTUUID::contains, used by service-
+  // data parsers (atc/pvvx/ruuvi) to match e.g. 0x181A regardless of length.
+  bool contains(uint8_t data1, uint8_t data2) const {
+    if (this->len_ == 2) {
+      return this->raw_[0] == data1 && this->raw_[1] == data2;
+    }
+    if (this->len_ < 2)
+      return false;
+    for (uint8_t i = 0; i + 1 < this->len_; i++) {
+      if (this->raw_[i] == data1 && this->raw_[i + 1] == data2)
+        return true;
+    }
+    return false;
+  }
+
   bool operator==(const ESPBTUUID &other) const {
     if (this->len_ != other.len_)
       return false;
