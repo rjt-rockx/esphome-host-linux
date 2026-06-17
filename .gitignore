@@ -9,7 +9,19 @@ build/
 *.swp
 *.swo
 .DS_Store
+
+# Secrets / credentials — never commit. (ESPHome resolves !secret from here.)
 secrets.yaml
+secrets.*.yaml
+*.secret.yaml
+
+# Local-only test scratch: configs that point at real test hardware / HA
+# instances and may carry API keys, OTA passwords, real MACs, or host addresses.
+# Keep these out of the public repo; only curated, secret-free examples ship.
+examples/*.local.yaml
+examples/local/
+/test/
+/test-local/
 
 # Scratchpad / design notes that aren't part of the shipped library.
 references/
