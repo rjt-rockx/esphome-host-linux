@@ -115,6 +115,91 @@ void BLEGattHostThread::wake() {
   (void) r;
 }
 
+BLEGattHost *BLEGattHostThread::find_host_by_device_(const char *device_path) {
+  if (device_path == nullptr)
+    return nullptr;
+  std::lock_guard<std::mutex> g(this->hosts_mu_);
+  for (auto *h : this->hosts_)
+    if (h->device_path() == device_path)
+      return h;
+  return nullptr;
+}
+
+// org.bluez.Agent1 vtable. CRITICAL: registered NON-DEFAULT (RegisterAgent
+// only). We never call RequestDefaultAgent, so the user's system/desktop agent
+// keeps handling all other pairings (invariant: don't hijack the system agent).
+static const sd_bus_vtable AGENT_VTABLE[] = {
+    SD_BUS_VTABLE_START(0),
+    SD_BUS_METHOD("Release", "", "", BLEGattHostThread::agent_release_, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RequestPasskey", "o", "u", BLEGattHostThread::agent_request_passkey_, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("DisplayPasskey", "ouq", "", BLEGattHostThread::agent_display_passkey_, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RequestConfirmation", "ou", "", BLEGattHostThread::agent_request_confirmation_,
+                  SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("Cancel", "", "", BLEGattHostThread::agent_cancel_, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_VTABLE_END};
+
+void BLEGattHostThread::ensure_agent(sd_bus *bus) {
+  if (this->agent_registered_ || bus == nullptr)
+    return;
+  // Export the Agent1 object.
+  int r = sd_bus_add_object_vtable(bus, &this->agent_vtable_slot_, AGENT_PATH, "org.bluez.Agent1", AGENT_VTABLE, this);
+  if (r < 0) {
+    ESP_LOGW(TAG, "agent vtable export failed: %s", std::strerror(-r));
+    return;
+  }
+  // RegisterAgent (NOT RequestDefaultAgent — never hijack the system agent).
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  r = sd_bus_call_method(bus, "org.bluez", "/org/bluez", "org.bluez.AgentManager1", "RegisterAgent", &err, nullptr,
+                         "os", AGENT_PATH, "KeyboardDisplay");
+  if (r < 0) {
+    ESP_LOGW(TAG, "RegisterAgent failed: %s", err.message ? err.message : std::strerror(-r));
+    sd_bus_error_free(&err);
+    return;
+  }
+  sd_bus_error_free(&err);
+  this->agent_registered_ = true;
+  ESP_LOGI(TAG, "registered non-default pairing agent (system agent untouched)");
+}
+
+int BLEGattHostThread::agent_release_(sd_bus_message *m, void * /*ud*/, sd_bus_error * /*e*/) {
+  return sd_bus_reply_method_return(m, "");
+}
+int BLEGattHostThread::agent_cancel_(sd_bus_message *m, void * /*ud*/, sd_bus_error * /*e*/) {
+  return sd_bus_reply_method_return(m, "");
+}
+int BLEGattHostThread::agent_request_passkey_(sd_bus_message *m, void *ud, sd_bus_error * /*e*/) {
+  auto *self = static_cast<BLEGattHostThread *>(ud);
+  const char *dev = nullptr;
+  sd_bus_message_read(m, "o", &dev);
+  auto *host = self->find_host_by_device_(dev);
+  if (host == nullptr)
+    return sd_bus_reply_method_errorf(m, "org.bluez.Error.Rejected", "no host for %s", dev ? dev : "?");
+  host->agent_request_passkey(m);  // parks the reply; answered via passkey_reply
+  return 1;                        // tell sd-bus the reply is deferred
+}
+int BLEGattHostThread::agent_display_passkey_(sd_bus_message *m, void *ud, sd_bus_error * /*e*/) {
+  auto *self = static_cast<BLEGattHostThread *>(ud);
+  const char *dev = nullptr;
+  uint32_t passkey = 0;
+  uint16_t entered = 0;
+  sd_bus_message_read(m, "ouq", &dev, &passkey, &entered);
+  auto *host = self->find_host_by_device_(dev);
+  if (host != nullptr)
+    host->agent_display_passkey(passkey);
+  return sd_bus_reply_method_return(m, "");
+}
+int BLEGattHostThread::agent_request_confirmation_(sd_bus_message *m, void *ud, sd_bus_error * /*e*/) {
+  auto *self = static_cast<BLEGattHostThread *>(ud);
+  const char *dev = nullptr;
+  uint32_t passkey = 0;
+  sd_bus_message_read(m, "ou", &dev, &passkey);
+  auto *host = self->find_host_by_device_(dev);
+  if (host == nullptr)
+    return sd_bus_reply_method_errorf(m, "org.bluez.Error.Rejected", "no host for %s", dev ? dev : "?");
+  host->agent_request_confirmation(m, passkey);  // parks the reply; answered via confirm_reply
+  return 1;                                       // deferred reply
+}
+
 // ---------------------------------------------------------------------------
 // BLEGattHost
 // ---------------------------------------------------------------------------
@@ -172,6 +257,19 @@ void BLEGattHost::set_notify(uint16_t handle, bool enable) {
   c.flag = enable;
   this->enqueue_command_(std::move(c));
 }
+void BLEGattHost::read_rssi() { this->enqueue_command_({HostGattCommand::Kind::READ_RSSI}); }
+void BLEGattHost::pair() { this->enqueue_command_({HostGattCommand::Kind::PAIR}); }
+void BLEGattHost::passkey_reply(uint32_t passkey) {
+  HostGattCommand c{HostGattCommand::Kind::PASSKEY_REPLY};
+  c.passkey = passkey;
+  this->enqueue_command_(std::move(c));
+}
+void BLEGattHost::confirm_reply(bool accept) {
+  HostGattCommand c{HostGattCommand::Kind::CONFIRM_REPLY};
+  c.flag = accept;
+  this->enqueue_command_(std::move(c));
+}
+void BLEGattHost::remove_bond() { this->enqueue_command_({HostGattCommand::Kind::REMOVE_BOND}); }
 
 std::deque<HostGattEvent> BLEGattHost::drain_events() {
   std::deque<HostGattEvent> out;
@@ -215,6 +313,21 @@ void BLEGattHost::worker_process_commands() {
         break;
       case HostGattCommand::Kind::SET_NOTIFY:
         this->do_set_notify_(c.handle, c.flag);
+        break;
+      case HostGattCommand::Kind::READ_RSSI:
+        this->do_read_rssi_();
+        break;
+      case HostGattCommand::Kind::PAIR:
+        this->do_pair_();
+        break;
+      case HostGattCommand::Kind::PASSKEY_REPLY:
+        this->do_passkey_reply_(c.passkey);
+        break;
+      case HostGattCommand::Kind::CONFIRM_REPLY:
+        this->do_confirm_reply_(c.flag);
+        break;
+      case HostGattCommand::Kind::REMOVE_BOND:
+        this->do_remove_bond_();
         break;
     }
   }
@@ -531,6 +644,107 @@ uint16_t BLEGattHost::acquire_mtu_() {
       return mtu;
   }
   return 23;  // fallback (the AcquireWrite probe lands in a later refinement)
+}
+
+void BLEGattHost::do_read_rssi_() {
+  HostGattEvent ev;
+  ev.kind = HostGattEvent::Kind::RSSI;
+  ev.rssi = 0;
+  if (this->bus_ != nullptr) {
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    int16_t rssi = 0;
+    int r = sd_bus_get_property_trivial(this->bus_, "org.bluez", this->device_path_.c_str(), "org.bluez.Device1",
+                                        "RSSI", &err, 'n', &rssi);
+    sd_bus_error_free(&err);
+    if (r >= 0)
+      ev.rssi = static_cast<int8_t>(rssi);
+  }
+  this->post_event_(std::move(ev));
+}
+
+void BLEGattHost::do_pair_() {
+  if (this->bus_ == nullptr)
+    return;
+  // Ensure our non-default agent is registered before pairing.
+  BLEGattHostThread::instance().ensure_agent(this->bus_);
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  int r = sd_bus_call_method(this->bus_, "org.bluez", this->device_path_.c_str(), "org.bluez.Device1", "Pair", &err,
+                             nullptr, "");
+  HostGattEvent ev;
+  ev.kind = HostGattEvent::Kind::PAIRING_COMPLETE;
+  if (r < 0) {
+    const char *name = err.name ? err.name : "";
+    bool already = std::strstr(name, "AlreadyExists") != nullptr;
+    ev.pairing_success = already;
+    if (!already)
+      ESP_LOGW(TAG, "Pair(%s) failed: %s", this->device_path_.c_str(), err.message ? err.message : std::strerror(-r));
+  } else {
+    ev.pairing_success = true;
+  }
+  sd_bus_error_free(&err);
+  this->post_event_(std::move(ev));
+}
+
+void BLEGattHost::do_passkey_reply_(uint32_t passkey) {
+  if (this->pending_agent_reply_ == nullptr)
+    return;
+  sd_bus_message *reply = this->pending_agent_reply_;
+  this->pending_agent_reply_ = nullptr;
+  // RequestPasskey returns a uint32.
+  sd_bus_message *resp = nullptr;
+  sd_bus_message_new_method_return(reply, &resp);
+  sd_bus_message_append(resp, "u", passkey);
+  sd_bus_send(this->bus_, resp, nullptr);
+  sd_bus_message_unref(resp);
+  sd_bus_message_unref(reply);
+}
+
+void BLEGattHost::do_confirm_reply_(bool accept) {
+  if (this->pending_agent_reply_ == nullptr)
+    return;
+  sd_bus_message *reply = this->pending_agent_reply_;
+  this->pending_agent_reply_ = nullptr;
+  if (accept) {
+    // RequestConfirmation returns void on accept.
+    sd_bus_message *resp = nullptr;
+    sd_bus_message_new_method_return(reply, &resp);
+    sd_bus_send(this->bus_, resp, nullptr);
+    sd_bus_message_unref(resp);
+  } else {
+    sd_bus_reply_method_errorf(reply, "org.bluez.Error.Rejected", "rejected");
+  }
+  sd_bus_message_unref(reply);
+}
+
+void BLEGattHost::do_remove_bond_() {
+  if (this->bus_ == nullptr)
+    return;
+  // RemoveDevice on the adapter drops the bond.
+  std::string adapter_path = "/org/bluez/" + this->adapter_;
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  sd_bus_call_method(this->bus_, "org.bluez", adapter_path.c_str(), "org.bluez.Adapter1", "RemoveDevice", &err, nullptr,
+                     "o", this->device_path_.c_str());
+  sd_bus_error_free(&err);
+}
+
+void BLEGattHost::agent_request_passkey(sd_bus_message *reply) {
+  this->pending_agent_reply_ = sd_bus_message_ref(reply);
+  HostGattEvent ev;
+  ev.kind = HostGattEvent::Kind::PASSKEY_REQUEST;
+  this->post_event_(std::move(ev));
+}
+void BLEGattHost::agent_display_passkey(uint32_t passkey) {
+  HostGattEvent ev;
+  ev.kind = HostGattEvent::Kind::PASSKEY_NOTIFY;
+  ev.passkey = passkey;
+  this->post_event_(std::move(ev));
+}
+void BLEGattHost::agent_request_confirmation(sd_bus_message *reply, uint32_t passkey) {
+  this->pending_agent_reply_ = sd_bus_message_ref(reply);
+  HostGattEvent ev;
+  ev.kind = HostGattEvent::Kind::NUMERIC_COMPARE;
+  ev.passkey = passkey;
+  this->post_event_(std::move(ev));
 }
 
 namespace {

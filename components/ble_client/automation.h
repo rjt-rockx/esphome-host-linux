@@ -78,6 +78,50 @@ template<typename... Ts> class BLEClientWriteAction : public Action<Ts...>, publ
   std::tuple<Ts...> var_{};
 };
 
+// --- pairing triggers/actions ---
+class BLEClientPasskeyRequestTrigger : public Trigger<>, public BLEClientNode {
+ public:
+  explicit BLEClientPasskeyRequestTrigger(BLEClient *parent) { parent->register_ble_node(this); }
+  void on_passkey_request() override { this->trigger(); }
+};
+class BLEClientPasskeyNotificationTrigger : public Trigger<uint32_t>, public BLEClientNode {
+ public:
+  explicit BLEClientPasskeyNotificationTrigger(BLEClient *parent) { parent->register_ble_node(this); }
+  void on_passkey_notification(uint32_t passkey) override { this->trigger(passkey); }
+};
+class BLEClientNumericComparisonRequestTrigger : public Trigger<uint32_t>, public BLEClientNode {
+ public:
+  explicit BLEClientNumericComparisonRequestTrigger(BLEClient *parent) { parent->register_ble_node(this); }
+  void on_numeric_comparison_request(uint32_t passkey) override { this->trigger(passkey); }
+};
+
+template<typename... Ts> class BLEClientPasskeyReplyAction : public Action<Ts...> {
+ public:
+  explicit BLEClientPasskeyReplyAction(BLEClient *parent) : parent_(parent) {}
+  TEMPLATABLE_VALUE(uint32_t, passkey)
+  void play(const Ts &...x) override { this->parent_->passkey_reply(this->passkey_.value(x...)); }
+
+ protected:
+  BLEClient *parent_;
+};
+template<typename... Ts> class BLEClientNumericComparisonReplyAction : public Action<Ts...> {
+ public:
+  explicit BLEClientNumericComparisonReplyAction(BLEClient *parent) : parent_(parent) {}
+  TEMPLATABLE_VALUE(bool, accept)
+  void play(const Ts &...x) override { this->parent_->confirm_reply(this->accept_.value(x...)); }
+
+ protected:
+  BLEClient *parent_;
+};
+template<typename... Ts> class BLEClientRemoveBondAction : public Action<Ts...> {
+ public:
+  explicit BLEClientRemoveBondAction(BLEClient *parent) : parent_(parent) {}
+  void play(const Ts &...x) override { this->parent_->remove_bond(); }
+
+ protected:
+  BLEClient *parent_;
+};
+
 template<typename... Ts> class BLEClientConnectAction : public Action<Ts...>, public BLEClientNode {
  public:
   explicit BLEClientConnectAction(BLEClient *parent) : parent_node_(parent) { parent->register_ble_node(this); }

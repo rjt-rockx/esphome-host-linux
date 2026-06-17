@@ -206,6 +206,13 @@ void BLEClientBase::dispatch_event_(const HostGattEvent &ev) {
       this->on_disconnect_complete(ev.disc_reason);
       break;
     }
+    case HostGattEvent::Kind::RSSI:
+      if (this->rssi_cb_)
+        this->rssi_cb_(ev.rssi);
+      break;
+    case HostGattEvent::Kind::PAIRING_COMPLETE:
+      this->paired_ = ev.pairing_success;
+      break;
     default:
       break;
   }
@@ -285,7 +292,13 @@ float BLEClientBase::parse_char_value(uint8_t *value, uint16_t length) {
 
 bool BLEClientBase::check_addr_(const uint8_t bda[6]) { return std::memcmp(bda, this->remote_bda_, 6) == 0; }
 
-esp_err_t BLEClientBase::pair() { return ESP_GATT_OK; }
+esp_err_t BLEClientBase::pair() {
+#ifdef USE_HOST
+  if (this->host_)
+    this->host_->pair();
+#endif
+  return ESP_GATT_OK;
+}
 
 // --- handle primitives: route to the BlueZ worker ---
 esp_err_t BLEClientBase::read_characteristic(uint16_t handle) {
@@ -338,10 +351,34 @@ esp_err_t BLEClientBase::notify_characteristic(uint16_t handle, bool enable) {
   return ESP_GATT_NOT_CONNECTED;
 #endif
 }
-esp_err_t BLEClientBase::passkey_reply(uint32_t passkey) { return ESP_GATT_OK; }
-esp_err_t BLEClientBase::confirm_reply(bool accept) { return ESP_GATT_OK; }
-esp_err_t BLEClientBase::remove_bond() { return ESP_GATT_OK; }
-void BLEClientBase::read_rssi(std::function<void(int8_t)> &&cb) { this->rssi_cb_ = std::move(cb); }
+esp_err_t BLEClientBase::passkey_reply(uint32_t passkey) {
+#ifdef USE_HOST
+  if (this->host_)
+    this->host_->passkey_reply(passkey);
+#endif
+  return ESP_GATT_OK;
+}
+esp_err_t BLEClientBase::confirm_reply(bool accept) {
+#ifdef USE_HOST
+  if (this->host_)
+    this->host_->confirm_reply(accept);
+#endif
+  return ESP_GATT_OK;
+}
+esp_err_t BLEClientBase::remove_bond() {
+#ifdef USE_HOST
+  if (this->host_)
+    this->host_->remove_bond();
+#endif
+  return ESP_GATT_OK;
+}
+void BLEClientBase::read_rssi(std::function<void(int8_t)> &&cb) {
+  this->rssi_cb_ = std::move(cb);
+#ifdef USE_HOST
+  if (this->host_ && this->state() == espbt::ClientState::ESTABLISHED)
+    this->host_->read_rssi();
+#endif
+}
 
 }  // namespace esp32_ble_client
 }  // namespace esphome

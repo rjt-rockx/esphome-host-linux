@@ -91,6 +91,24 @@ float BLESensor::parse_data_(const uint8_t *value, uint16_t value_len) {
   return value_len > 0 ? static_cast<float>(value[0]) : NAN;
 }
 
+// --- RSSI sensor ---
+void BLEClientRSSISensor::dump_config() { LOG_SENSOR("", "BLE Client RSSI", this); }
+
+void BLEClientRSSISensor::on_services_discovered() { this->node_state = espbt::ClientState::ESTABLISHED; }
+
+void BLEClientRSSISensor::on_disconnected(int /*reason*/) {
+  this->node_state = espbt::ClientState::IDLE;
+  this->publish_state(NAN);
+}
+
+void BLEClientRSSISensor::update() {
+  if (this->parent()->state() != espbt::ClientState::ESTABLISHED)
+    return;
+  this->parent()->read_rssi([this](int8_t rssi) { this->publish_state(rssi); });
+}
+
+void BLEClientRSSISensor::on_rssi(int8_t rssi) { this->publish_state(rssi); }
+
 }  // namespace ble_client
 }  // namespace esphome
 

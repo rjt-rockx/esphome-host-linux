@@ -1,0 +1,37 @@
+# Step 5: pairing automation surface (compile-verify; live passkey needs a
+# pairing-required peripheral). Also confirms the non-default Agent1 path builds.
+esphome:
+  name: ble-client-pair
+  platformio_options:
+    board_build.cmake_extra_args: >-
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+host:
+logger:
+external_components:
+  - source: {type: local, path: ../components}
+esp32_ble_tracker:
+ble_client:
+  - mac_address: 40:4C:CA:57:8B:76
+    id: c6
+    on_passkey_request:
+      then:
+        - ble_client.passkey_reply:
+            id: c6
+            passkey: 123456
+    on_passkey_notification:
+      then:
+        - logger.log:
+            format: "passkey: %06u"
+            args: [passkey]
+    on_numeric_comparison_request:
+      then:
+        - ble_client.numeric_comparison_reply:
+            id: c6
+            accept: true
+button:
+  - platform: template
+    name: "Remove Bond"
+    on_press:
+      - ble_client.remove_bond:
+          id: c6

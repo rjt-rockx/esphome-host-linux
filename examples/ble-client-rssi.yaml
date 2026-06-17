@@ -1,0 +1,23 @@
+# Step 5: RSSI sensor + web_server for live observation.
+esphome:
+  name: ble-client-rssi
+  platformio_options:
+    board_build.cmake_extra_args: >-
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+host:
+api:
+logger:
+  level: VERBOSE
+external_components:
+  - source: {type: local, path: ../components}
+esp32_ble_tracker:
+ble_client:
+  - mac_address: 40:4C:CA:57:8B:76
+    id: c6
+sensor:
+  - platform: ble_client
+    type: rssi
+    ble_client_id: c6
+    name: "C6 RSSI"
+    update_interval: 2s

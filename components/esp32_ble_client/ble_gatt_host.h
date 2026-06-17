@@ -43,9 +43,15 @@ struct HostGattCommand {
     WRITE_CHAR,
     WRITE_DESC,
     SET_NOTIFY,
+    READ_RSSI,
+    PAIR,
+    PASSKEY_REPLY,
+    CONFIRM_REPLY,
+    REMOVE_BOND,
   } kind;
   uint16_t handle{0};
-  bool flag{false};                  // SET_NOTIFY enable / WRITE_* response
+  bool flag{false};                  // SET_NOTIFY enable / WRITE_* response / CONFIRM accept
+  uint32_t passkey{0};               // PASSKEY_REPLY
   std::vector<uint8_t> data;         // WRITE_* payload
 };
 
@@ -63,6 +69,20 @@ class BLEGattHostThread {
   void wake();
   sd_event *event() { return this->event_; }
 
+  // Lazily register a NON-DEFAULT org.bluez.Agent1 (RegisterAgent only — never
+  // RequestDefaultAgent, so the system agent is never hijacked). Called when a
+  // client declares pairing. The agent routes callbacks to the host whose
+  // device_path matches the requesting device. Uses `bus` (a client's bus).
+  void ensure_agent(sd_bus *bus);
+  BLEGattHost *find_host_by_device_(const char *device_path);
+
+  // Agent1 method trampolines (public so the file-scope vtable can name them).
+  static int agent_request_passkey_(sd_bus_message *m, void *userdata, sd_bus_error *e);
+  static int agent_display_passkey_(sd_bus_message *m, void *userdata, sd_bus_error *e);
+  static int agent_request_confirmation_(sd_bus_message *m, void *userdata, sd_bus_error *e);
+  static int agent_release_(sd_bus_message *m, void *userdata, sd_bus_error *e);
+  static int agent_cancel_(sd_bus_message *m, void *userdata, sd_bus_error *e);
+
  protected:
   BLEGattHostThread() = default;
   void ensure_started_();
@@ -77,7 +97,15 @@ class BLEGattHostThread {
   std::mutex hosts_mu_;
   std::vector<BLEGattHost *> hosts_;
   std::mutex pending_mu_;
+
+  // Agent1 (non-default). Registered once on the first pairing-capable client.
+  bool agent_registered_{false};
+  sd_bus_slot *agent_vtable_slot_{nullptr};
 };
+
+// D-Bus object path for our non-default pairing agent. Neutral, project-scoped
+// path (not tied to any org) so this works as a generic library.
+static constexpr const char *AGENT_PATH = "/org/esphome/host/ble/agent";
 
 class BLEGattHost {
  public:
@@ -92,6 +120,11 @@ class BLEGattHost {
   void write_char(uint16_t handle, const uint8_t *data, size_t len, bool response);
   void write_desc(uint16_t handle, const uint8_t *data, size_t len, bool response);
   void set_notify(uint16_t handle, bool enable);
+  void read_rssi();
+  void pair();
+  void passkey_reply(uint32_t passkey);
+  void confirm_reply(bool accept);
+  void remove_bond();
 
   // --- main-thread event drain ---
   // Returns and clears the queued events (called from BLEClientBase::loop()).
@@ -115,6 +148,11 @@ class BLEGattHost {
   void do_read_(uint16_t handle, bool is_desc);
   void do_write_(uint16_t handle, const std::vector<uint8_t> &data, bool response, bool is_desc);
   void do_set_notify_(uint16_t handle, bool enable);
+  void do_read_rssi_();
+  void do_pair_();
+  void do_passkey_reply_(uint32_t passkey);
+  void do_confirm_reply_(bool accept);
+  void do_remove_bond_();
   // Subscribe to Value PropertiesChanged for a characteristic path (notify).
   void subscribe_value_(const std::string &char_path, uint16_t handle);
   static int on_value_changed_(sd_bus_message *m, void *userdata, sd_bus_error *ret_error);
@@ -149,6 +187,19 @@ class BLEGattHost {
     sd_bus_slot *slot;
   };
   std::unordered_map<std::string, NotifySub> notify_subs_;
+
+  // Pairing: a parked Agent1 reply awaiting passkey_reply/confirm_reply.
+  sd_bus_message *pending_agent_reply_{nullptr};
+
+ public:
+  // Called by the process-global agent (worker thread) when BlueZ asks this
+  // device for a passkey / numeric comparison. Stores the reply to answer later.
+  void agent_request_passkey(sd_bus_message *reply);
+  void agent_display_passkey(uint32_t passkey);
+  void agent_request_confirmation(sd_bus_message *reply, uint32_t passkey);
+  bool has_pending_agent_reply() const { return this->pending_agent_reply_ != nullptr; }
+
+ protected:
 
   std::mutex cmd_mu_;
   std::deque<HostGattCommand> commands_;

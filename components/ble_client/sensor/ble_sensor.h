@@ -57,6 +57,16 @@ class BLESensor : public sensor::Sensor, public PollingComponent, public BLEClie
   espbt::ESPBTUUID descr_uuid_;
 };
 
+// RSSI sensor: polls Device1.RSSI of the connected peer.
+class BLEClientRSSISensor : public sensor::Sensor, public PollingComponent, public BLEClientNode {
+ public:
+  void update() override;
+  void dump_config() override;
+  void on_services_discovered() override;
+  void on_disconnected(int reason) override;
+  void on_rssi(int8_t rssi) override;
+};
+
 }  // namespace ble_client
 }  // namespace esphome
 

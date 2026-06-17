@@ -9,7 +9,16 @@ from __future__ import annotations
 import esphome.codegen as cg
 from esphome.components import ble_client, esp32_ble_tracker, sensor
 import esphome.config_validation as cv
-from esphome.const import CONF_CHARACTERISTIC_UUID, CONF_LAMBDA, CONF_NOTIFY, CONF_SERVICE_UUID, CONF_TYPE
+from esphome.const import (
+    CONF_CHARACTERISTIC_UUID,
+    CONF_LAMBDA,
+    CONF_NOTIFY,
+    CONF_SERVICE_UUID,
+    CONF_TYPE,
+    DEVICE_CLASS_SIGNAL_STRENGTH,
+    STATE_CLASS_MEASUREMENT,
+    UNIT_DECIBEL_MILLIWATT,
+)
 
 from .. import BLE_CLIENT_SCHEMA, ble_client_ns, register_ble_node
 
@@ -17,11 +26,15 @@ DEPENDENCIES = ["ble_client"]
 
 CONF_DESCRIPTOR_UUID = "descriptor_uuid"
 TYPE_CHARACTERISTIC = "characteristic"
+TYPE_RSSI = "rssi"
 
 adv_data_t = cg.std_vector.template(cg.uint8)
 adv_data_t_const_ref = adv_data_t.operator("ref").operator("const")
 
 BLESensor = ble_client_ns.class_("BLESensor", sensor.Sensor, cg.PollingComponent, ble_client.BLEClientNode)
+BLEClientRSSISensor = ble_client_ns.class_(
+    "BLEClientRSSISensor", sensor.Sensor, cg.PollingComponent, ble_client.BLEClientNode
+)
 
 
 def _checktype(value):
@@ -46,6 +59,15 @@ CONFIG_SCHEMA = cv.All(
                     cv.Optional(CONF_NOTIFY, default=False): cv.boolean,
                 }
             ),
+            TYPE_RSSI: sensor.sensor_schema(
+                BLEClientRSSISensor,
+                unit_of_measurement=UNIT_DECIBEL_MILLIWATT,
+                accuracy_decimals=0,
+                device_class=DEVICE_CLASS_SIGNAL_STRENGTH,
+                state_class=STATE_CLASS_MEASUREMENT,
+            )
+            .extend(cv.polling_component_schema("60s"))
+            .extend(BLE_CLIENT_SCHEMA),
         },
         default_type=TYPE_CHARACTERISTIC,
         lower=True,
@@ -68,6 +90,9 @@ async def to_code(config):
     var = await sensor.new_sensor(config)
     await cg.register_component(var, config)
     await register_ble_node(var, config)
+
+    if config[CONF_TYPE] == TYPE_RSSI:
+        return  # RSSI sensor needs no characteristic UUIDs
 
     _set_uuid("set_service_uuid", var, config[CONF_SERVICE_UUID])
     _set_uuid("set_char_uuid", var, config[CONF_CHARACTERISTIC_UUID])
