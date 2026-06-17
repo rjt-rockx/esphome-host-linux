@@ -130,7 +130,7 @@ BLEGattHost::~BLEGattHost() {
 void BLEGattHost::enqueue_command_(HostGattCommand cmd) {
   {
     std::lock_guard<std::mutex> g(this->cmd_mu_);
-    this->commands_.push_back(cmd);
+    this->commands_.push_back(std::move(cmd));
   }
   BLEGattHostThread::instance().wake();
 }
@@ -141,6 +141,37 @@ void BLEGattHost::connect() {
 }
 
 void BLEGattHost::disconnect() { this->enqueue_command_({HostGattCommand::Kind::DISCONNECT}); }
+
+void BLEGattHost::read_char(uint16_t handle) {
+  HostGattCommand c{HostGattCommand::Kind::READ_CHAR};
+  c.handle = handle;
+  this->enqueue_command_(std::move(c));
+}
+void BLEGattHost::read_desc(uint16_t handle) {
+  HostGattCommand c{HostGattCommand::Kind::READ_DESC};
+  c.handle = handle;
+  this->enqueue_command_(std::move(c));
+}
+void BLEGattHost::write_char(uint16_t handle, const uint8_t *data, size_t len, bool response) {
+  HostGattCommand c{HostGattCommand::Kind::WRITE_CHAR};
+  c.handle = handle;
+  c.flag = response;
+  c.data.assign(data, data + len);
+  this->enqueue_command_(std::move(c));
+}
+void BLEGattHost::write_desc(uint16_t handle, const uint8_t *data, size_t len, bool response) {
+  HostGattCommand c{HostGattCommand::Kind::WRITE_DESC};
+  c.handle = handle;
+  c.flag = response;
+  c.data.assign(data, data + len);
+  this->enqueue_command_(std::move(c));
+}
+void BLEGattHost::set_notify(uint16_t handle, bool enable) {
+  HostGattCommand c{HostGattCommand::Kind::SET_NOTIFY};
+  c.handle = handle;
+  c.flag = enable;
+  this->enqueue_command_(std::move(c));
+}
 
 std::deque<HostGattEvent> BLEGattHost::drain_events() {
   std::deque<HostGattEvent> out;
@@ -169,6 +200,21 @@ void BLEGattHost::worker_process_commands() {
         break;
       case HostGattCommand::Kind::DISCONNECT:
         this->do_disconnect_();
+        break;
+      case HostGattCommand::Kind::READ_CHAR:
+        this->do_read_(c.handle, false);
+        break;
+      case HostGattCommand::Kind::READ_DESC:
+        this->do_read_(c.handle, true);
+        break;
+      case HostGattCommand::Kind::WRITE_CHAR:
+        this->do_write_(c.handle, c.data, c.flag, false);
+        break;
+      case HostGattCommand::Kind::WRITE_DESC:
+        this->do_write_(c.handle, c.data, c.flag, true);
+        break;
+      case HostGattCommand::Kind::SET_NOTIFY:
+        this->do_set_notify_(c.handle, c.flag);
         break;
     }
   }
@@ -485,6 +531,183 @@ uint16_t BLEGattHost::acquire_mtu_() {
       return mtu;
   }
   return 23;  // fallback (the AcquireWrite probe lands in a later refinement)
+}
+
+namespace {
+// Append the standard options dict ({} — no offset) to a Read/WriteValue call.
+void append_empty_options(sd_bus_message *m) {
+  sd_bus_message_open_container(m, 'a', "{sv}");
+  sd_bus_message_close_container(m);
+}
+// Copy a 'ay' byte array out of a reply/message into a fresh owned buffer.
+std::unique_ptr<uint8_t[]> read_ay(sd_bus_message *m, uint16_t &len_out) {
+  const void *data = nullptr;
+  size_t len = 0;
+  if (sd_bus_message_read_array(m, 'y', &data, &len) < 0) {
+    len_out = 0;
+    return nullptr;
+  }
+  len_out = static_cast<uint16_t>(len);
+  if (len == 0)
+    return nullptr;
+  auto buf = std::make_unique<uint8_t[]>(len);
+  std::memcpy(buf.get(), data, len);
+  return buf;
+}
+}  // namespace
+
+void BLEGattHost::do_read_(uint16_t handle, bool is_desc) {
+  auto it = this->handle_map_.find(handle);
+  if (it == this->handle_map_.end()) {
+    HostGattEvent ev;
+    ev.kind = is_desc ? HostGattEvent::Kind::DESC_READ : HostGattEvent::Kind::READ_COMPLETE;
+    ev.handle = handle;
+    ev.status = ESP_GATT_INVALID_HANDLE;
+    this->post_event_(std::move(ev));
+    return;
+  }
+  const char *iface = (it->second.kind == ObjEntry::DESC) ? "org.bluez.GattDescriptor1" : "org.bluez.GattCharacteristic1";
+  sd_bus_message *call = nullptr;
+  sd_bus_message_new_method_call(this->bus_, &call, "org.bluez", it->second.path.c_str(), iface, "ReadValue");
+  append_empty_options(call);
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  sd_bus_message *reply = nullptr;
+  int r = sd_bus_call(this->bus_, call, 0, &err, &reply);
+  sd_bus_message_unref(call);
+
+  HostGattEvent ev;
+  ev.kind = is_desc ? HostGattEvent::Kind::DESC_READ : HostGattEvent::Kind::READ_COMPLETE;
+  ev.handle = handle;
+  if (r < 0) {
+    ev.status = ESP_GATT_ERROR;
+    ESP_LOGW(TAG, "ReadValue(0x%04X) failed: %s", handle, err.message ? err.message : std::strerror(-r));
+  } else {
+    ev.status = ESP_GATT_OK;
+    ev.data = read_ay(reply, ev.len);
+  }
+  sd_bus_error_free(&err);
+  if (reply != nullptr)
+    sd_bus_message_unref(reply);
+  this->post_event_(std::move(ev));
+}
+
+void BLEGattHost::do_write_(uint16_t handle, const std::vector<uint8_t> &data, bool response, bool is_desc) {
+  // CCCD interception: a write of {0x01,0x00}/{0x02,0x00} to a 0x2902 descriptor
+  // → StartNotify on the parent char; {0x00,0x00} → StopNotify. BlueZ owns CCCD.
+  auto it = this->handle_map_.find(handle);
+  HostGattEvent ev;
+  ev.kind = is_desc ? HostGattEvent::Kind::DESC_WRITE : HostGattEvent::Kind::WRITE_COMPLETE;
+  ev.handle = handle;
+  if (it == this->handle_map_.end()) {
+    ev.status = ESP_GATT_INVALID_HANDLE;
+    this->post_event_(std::move(ev));
+    return;
+  }
+  const char *iface = (it->second.kind == ObjEntry::DESC) ? "org.bluez.GattDescriptor1" : "org.bluez.GattCharacteristic1";
+  sd_bus_message *call = nullptr;
+  sd_bus_message_new_method_call(this->bus_, &call, "org.bluez", it->second.path.c_str(), iface, "WriteValue");
+  sd_bus_message_append_array(call, 'y', data.data(), data.size());
+  // options: {"type": "request"|"command"}
+  sd_bus_message_open_container(call, 'a', "{sv}");
+  sd_bus_message_open_container(call, 'e', "sv");
+  sd_bus_message_append(call, "s", "type");
+  sd_bus_message_append(call, "v", "s", response ? "request" : "command");
+  sd_bus_message_close_container(call);
+  sd_bus_message_close_container(call);
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  int r = sd_bus_call(this->bus_, call, 0, &err, nullptr);
+  sd_bus_message_unref(call);
+  // Always post WRITE_COMPLETE (both write types) so action chains never hang.
+  ev.status = (r < 0) ? ESP_GATT_ERROR : ESP_GATT_OK;
+  if (r < 0)
+    ESP_LOGW(TAG, "WriteValue(0x%04X) failed: %s", handle, err.message ? err.message : std::strerror(-r));
+  sd_bus_error_free(&err);
+  this->post_event_(std::move(ev));
+}
+
+void BLEGattHost::do_set_notify_(uint16_t handle, bool enable) {
+  auto it = this->handle_map_.find(handle);
+  HostGattEvent ev;
+  ev.kind = HostGattEvent::Kind::NOTIFY_REGISTERED;
+  ev.handle = handle;
+  if (it == this->handle_map_.end() || it->second.kind != ObjEntry::CHAR) {
+    ev.status = ESP_GATT_INVALID_HANDLE;
+    this->post_event_(std::move(ev));
+    return;
+  }
+  const std::string &path = it->second.path;
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  int r = sd_bus_call_method(this->bus_, "org.bluez", path.c_str(), "org.bluez.GattCharacteristic1",
+                             enable ? "StartNotify" : "StopNotify", &err, nullptr, "");
+  if (r < 0) {
+    ESP_LOGW(TAG, "%s(0x%04X) failed: %s", enable ? "StartNotify" : "StopNotify", handle,
+             err.message ? err.message : std::strerror(-r));
+    ev.status = ESP_GATT_ERROR;
+  } else {
+    ev.status = ESP_GATT_OK;
+    if (enable) {
+      this->subscribe_value_(path, handle);
+    } else {
+      auto sub = this->notify_subs_.find(path);
+      if (sub != this->notify_subs_.end()) {
+        if (sub->second.slot != nullptr)
+          sd_bus_slot_unref(sub->second.slot);
+        this->notify_subs_.erase(sub);
+      }
+    }
+  }
+  sd_bus_error_free(&err);
+  this->post_event_(std::move(ev));
+}
+
+void BLEGattHost::subscribe_value_(const std::string &char_path, uint16_t handle) {
+  if (this->notify_subs_.count(char_path))
+    return;  // already subscribed
+  NotifySub sub{handle, nullptr};
+  std::string match = "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='" +
+                      char_path + "'";
+  // userdata is `this`; the handler maps path→handle via notify_subs_.
+  sd_bus_add_match(this->bus_, &sub.slot, match.c_str(), &BLEGattHost::on_value_changed_, this);
+  this->notify_subs_[char_path] = sub;
+}
+
+int BLEGattHost::on_value_changed_(sd_bus_message *m, void *userdata, sd_bus_error * /*ret_error*/) {
+  auto *self = static_cast<BLEGattHost *>(userdata);
+  const char *path = sd_bus_message_get_path(m);
+  if (path == nullptr)
+    return 0;
+  auto sub = self->notify_subs_.find(path);
+  if (sub == self->notify_subs_.end())
+    return 0;
+  uint16_t handle = sub->second.handle;
+
+  const char *iface = nullptr;
+  if (sd_bus_message_read(m, "s", &iface) < 0)
+    return 0;
+  if (iface == nullptr || std::strcmp(iface, "org.bluez.GattCharacteristic1") != 0)
+    return 0;
+  if (sd_bus_message_enter_container(m, 'a', "{sv}") < 0)
+    return 0;
+  for (;;) {
+    if (sd_bus_message_enter_container(m, 'e', "sv") <= 0)
+      break;
+    const char *key = nullptr;
+    sd_bus_message_read(m, "s", &key);
+    if (key != nullptr && std::strcmp(key, "Value") == 0) {
+      sd_bus_message_enter_container(m, 'v', "ay");
+      HostGattEvent ev;
+      ev.kind = HostGattEvent::Kind::NOTIFY;
+      ev.handle = handle;
+      ev.data = read_ay(m, ev.len);
+      sd_bus_message_exit_container(m);
+      self->post_event_(std::move(ev));
+    } else {
+      sd_bus_message_skip(m, "v");
+    }
+    sd_bus_message_exit_container(m);
+  }
+  sd_bus_message_exit_container(m);
+  return 0;
 }
 
 int BLEGattHost::on_properties_changed_(sd_bus_message *m, void *userdata, sd_bus_error * /*ret_error*/) {

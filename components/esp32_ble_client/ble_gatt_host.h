@@ -38,8 +38,15 @@ struct HostGattCommand {
   enum class Kind : uint8_t {
     CONNECT,
     DISCONNECT,
+    READ_CHAR,
+    READ_DESC,
+    WRITE_CHAR,
+    WRITE_DESC,
+    SET_NOTIFY,
   } kind;
-  // (later steps add handle/data/bool fields)
+  uint16_t handle{0};
+  bool flag{false};                  // SET_NOTIFY enable / WRITE_* response
+  std::vector<uint8_t> data;         // WRITE_* payload
 };
 
 class BLEGattHost;
@@ -80,6 +87,11 @@ class BLEGattHost {
   // --- main-thread command API (thread-safe enqueue + worker wakeup) ---
   void connect();
   void disconnect();
+  void read_char(uint16_t handle);
+  void read_desc(uint16_t handle);
+  void write_char(uint16_t handle, const uint8_t *data, size_t len, bool response);
+  void write_desc(uint16_t handle, const uint8_t *data, size_t len, bool response);
+  void set_notify(uint16_t handle, bool enable);
 
   // --- main-thread event drain ---
   // Returns and clears the queued events (called from BLEClientBase::loop()).
@@ -100,6 +112,12 @@ class BLEGattHost {
   void close_bus_();
   void do_connect_();
   void do_disconnect_();
+  void do_read_(uint16_t handle, bool is_desc);
+  void do_write_(uint16_t handle, const std::vector<uint8_t> &data, bool response, bool is_desc);
+  void do_set_notify_(uint16_t handle, bool enable);
+  // Subscribe to Value PropertiesChanged for a characteristic path (notify).
+  void subscribe_value_(const std::string &char_path, uint16_t handle);
+  static int on_value_changed_(sd_bus_message *m, void *userdata, sd_bus_error *ret_error);
   // Discovery: gate on ServicesResolved, walk GetManagedObjects, acquire MTU,
   // then post SERVICES_DISCOVERED. Returns false (and posts DISCONNECTED) if a
   // GATT object lacks a real Handle (hard requirement — no synthesis).
@@ -123,8 +141,14 @@ class BLEGattHost {
   std::atomic<bool> bus_open_{false};
   bool discovered_{false};  // worker-only: SERVICES_DISCOVERED already posted
 
-  // worker-only handle maps for read/write/notify routing (later steps)
+  // worker-only handle maps for read/write/notify routing
   std::unordered_map<uint16_t, ObjEntry> handle_map_;
+  // notify subscriptions: char path → (handle, signal slot)
+  struct NotifySub {
+    uint16_t handle;
+    sd_bus_slot *slot;
+  };
+  std::unordered_map<std::string, NotifySub> notify_subs_;
 
   std::mutex cmd_mu_;
   std::deque<HostGattCommand> commands_;

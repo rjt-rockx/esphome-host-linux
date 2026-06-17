@@ -1,0 +1,35 @@
+# Step 3: read + notify via ble_client/sensor against the C6 GATT server.
+esphome:
+  name: ble-client-sensor
+  platformio_options:
+    board_build.cmake_extra_args: >-
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+host:
+logger:
+  level: VERBOSE
+external_components:
+  - source: {type: local, path: ../components}
+esp32_ble_tracker:
+ble_client:
+  - mac_address: 40:4C:CA:57:8B:76
+    id: c6
+sensor:
+  # notify char (...0004) — increments every 2s on the C6
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: c6
+    id: notify_val
+    name: "Notify Value"
+    service_uuid: a1b2c3d4-0000-1000-8000-00805f9b0001
+    characteristic_uuid: a1b2c3d4-0000-1000-8000-00805f9b0004
+    notify: true
+  # read char (...0002) — DEADBEEF, polled
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: c6
+    id: read_val
+    name: "Read Value"
+    service_uuid: a1b2c3d4-0000-1000-8000-00805f9b0001
+    characteristic_uuid: a1b2c3d4-0000-1000-8000-00805f9b0002
+    update_interval: 3s

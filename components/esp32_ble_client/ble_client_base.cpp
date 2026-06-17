@@ -287,16 +287,57 @@ bool BLEClientBase::check_addr_(const uint8_t bda[6]) { return std::memcmp(bda, 
 
 esp_err_t BLEClientBase::pair() { return ESP_GATT_OK; }
 
-// --- handle primitives: connect/disconnect path only in Step 1 ---
-esp_err_t BLEClientBase::read_characteristic(uint16_t handle) { return ESP_GATT_NOT_CONNECTED; }
+// --- handle primitives: route to the BlueZ worker ---
+esp_err_t BLEClientBase::read_characteristic(uint16_t handle) {
+#ifdef USE_HOST
+  if (this->state() != espbt::ClientState::ESTABLISHED || !this->host_)
+    return ESP_GATT_NOT_CONNECTED;
+  this->host_->read_char(handle);
+  return ESP_GATT_OK;
+#else
+  return ESP_GATT_NOT_CONNECTED;
+#endif
+}
 esp_err_t BLEClientBase::write_characteristic(uint16_t handle, const uint8_t *data, size_t length, bool response) {
+#ifdef USE_HOST
+  if (this->state() != espbt::ClientState::ESTABLISHED || !this->host_)
+    return ESP_GATT_NOT_CONNECTED;
+  this->host_->write_char(handle, data, length, response);
+  return ESP_GATT_OK;
+#else
   return ESP_GATT_NOT_CONNECTED;
+#endif
 }
-esp_err_t BLEClientBase::read_descriptor(uint16_t handle) { return ESP_GATT_NOT_CONNECTED; }
+esp_err_t BLEClientBase::read_descriptor(uint16_t handle) {
+#ifdef USE_HOST
+  if (this->state() != espbt::ClientState::ESTABLISHED || !this->host_)
+    return ESP_GATT_NOT_CONNECTED;
+  this->host_->read_desc(handle);
+  return ESP_GATT_OK;
+#else
+  return ESP_GATT_NOT_CONNECTED;
+#endif
+}
 esp_err_t BLEClientBase::write_descriptor(uint16_t handle, const uint8_t *data, size_t length, bool response) {
+#ifdef USE_HOST
+  if (this->state() != espbt::ClientState::ESTABLISHED || !this->host_)
+    return ESP_GATT_NOT_CONNECTED;
+  this->host_->write_desc(handle, data, length, response);
+  return ESP_GATT_OK;
+#else
   return ESP_GATT_NOT_CONNECTED;
+#endif
 }
-esp_err_t BLEClientBase::notify_characteristic(uint16_t handle, bool enable) { return ESP_GATT_NOT_CONNECTED; }
+esp_err_t BLEClientBase::notify_characteristic(uint16_t handle, bool enable) {
+#ifdef USE_HOST
+  if (this->state() != espbt::ClientState::ESTABLISHED || !this->host_)
+    return ESP_GATT_NOT_CONNECTED;
+  this->host_->set_notify(handle, enable);
+  return ESP_GATT_OK;
+#else
+  return ESP_GATT_NOT_CONNECTED;
+#endif
+}
 esp_err_t BLEClientBase::passkey_reply(uint32_t passkey) { return ESP_GATT_OK; }
 esp_err_t BLEClientBase::confirm_reply(bool accept) { return ESP_GATT_OK; }
 esp_err_t BLEClientBase::remove_bond() { return ESP_GATT_OK; }
