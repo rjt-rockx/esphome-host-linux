@@ -198,10 +198,15 @@ class ESPBTDevice {
 
 class ESP32BLETracker;
 
+enum class AdvertisementParserType;
+
 class ESPBTDeviceListener {
  public:
   virtual ~ESPBTDeviceListener() = default;
   virtual bool parse_device(const ESPBTDevice &device) = 0;
+  // Raw-advertisement path (bluetooth_proxy). Default no-op; the host backend
+  // delivers via parse_device, and the proxy re-serializes parsed fields.
+  virtual bool parse_devices(const ESPBTDevice *devices, size_t count) { return false; }
   virtual void on_scan_end() {}
   void set_parent(ESP32BLETracker *parent) { this->parent_ = parent; }
 
@@ -227,6 +232,27 @@ enum class ConnectionType : uint8_t {
   V1,
   V3_WITH_CACHE,
   V3_WITHOUT_CACHE,
+};
+
+// Scanner state, mirrored from upstream. On the host D-Bus backend the scan is
+// effectively always running once started; RUNNING is reported.
+enum class ScannerState {
+  IDLE,
+  STARTING,
+  RUNNING,
+  FAILED,
+  STOPPING,
+};
+
+// Listener for scanner state changes (bluetooth_proxy implements this).
+class BLEScannerStateListener {
+ public:
+  virtual void on_scanner_state(ScannerState state) = 0;
+};
+
+enum class AdvertisementParserType {
+  PARSED_ADVERTISEMENTS,
+  RAW_ADVERTISEMENTS,
 };
 
 /// Base class for GATT clients the tracker drives. On host the GATT transport
@@ -289,6 +315,12 @@ class ESP32BLETracker : public Component {
     this->listeners_.push_back(listener);
   }
 
+  // Scanner-state listeners (bluetooth_proxy). On host the scan is always-on
+  // once started, so we report RUNNING; the listener is notified at setup.
+  void add_scanner_state_listener(BLEScannerStateListener *l) { this->scanner_state_listeners_.push_back(l); }
+  ScannerState get_scanner_state() const { return ScannerState::RUNNING; }
+  bool get_scan_active() const { return this->scan_active_; }
+
   // Register a GATT client so the tracker delivers scan results to it and
   // promotes it DISCOVERED→CONNECTING. On the D-Bus backend BlueZ can connect
   // while discovering, so promotion just calls connect() (no scan stop needed).
@@ -328,6 +360,7 @@ class ESP32BLETracker : public Component {
   bool use_hci_backend_{false};
 
   std::vector<ESPBTDeviceListener *> listeners_;
+  std::vector<BLEScannerStateListener *> scanner_state_listeners_;
   std::vector<ESPBTClient *> clients_;
   uint8_t state_version_{0};
   uint8_t last_state_version_{0};

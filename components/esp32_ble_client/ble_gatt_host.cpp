@@ -6,6 +6,7 @@
 #include "esphome/core/log.h"
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 
 #include <sys/eventfd.h>
@@ -626,8 +627,84 @@ bool BLEGattHost::walk_gatt_tree_(std::vector<DiscoveredService> &out) {
     }
     out.push_back(std::move(svc));
   }
+  // BlueZ <5.79 doesn't export the GAP service (0x1800); a stock ESP32 proxy
+  // reports it. Rebuild it from Device1 props so GATTGetServices matches.
+  this->synthesize_gap_service_(out);
   ESP_LOGD(TAG, "discovered %zu services on %s", out.size(), this->device_path_.c_str());
   return true;
+}
+
+// Synthetic GAP (0x1800), only if BlueZ didn't already export one (it does on
+// >=5.79 with ExportClaimedServices). Read-only; values from Device1:
+//   0x2a00 Device Name  <- Device1.Name
+//   0x2a01 Appearance   <- Device1.Appearance (2-byte LE; default 0 = Unknown)
+//   0x2aa6 Central Address Resolution (0x01 = supported)
+// We deliberately do NOT synthesize 0x2a04 (Peripheral Preferred Connection
+// Parameters): it is optional and device-specific, BlueZ gives us no signal for
+// it, and a real ESP32 proxy only reports the characteristics the peripheral
+// actually exposes. The C6 oracle's GAP has exactly 2a00/2a01/2aa6 — match that.
+// Synthetic handles live in a reserved high range so they never collide with
+// real BlueZ ATT handles. do_read_ serves them from synthetic_reads_.
+void BLEGattHost::synthesize_gap_service_(std::vector<DiscoveredService> &out) {
+  this->synthetic_reads_.clear();
+  static constexpr uint16_t GAP_UUID = 0x1800;
+  for (const auto &s : out) {
+    if (s.uuid == BLEUUID::from_uint16(GAP_UUID))
+      return;  // BlueZ exported a real 0x1800 — keep its true handles, don't duplicate
+  }
+  if (this->bus_ == nullptr)
+    return;
+
+  // Device Name (0x2a00) <- Device1.Name (falls back to Alias if Name absent).
+  std::vector<uint8_t> name_bytes;
+  for (const char *prop : {"Name", "Alias"}) {
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    char *name = nullptr;
+    int r = sd_bus_get_property_string(this->bus_, "org.bluez", this->device_path_.c_str(), "org.bluez.Device1", prop,
+                                       &err, &name);
+    sd_bus_error_free(&err);
+    if (r >= 0 && name != nullptr && name[0] != '\0') {
+      name_bytes.assign(name, name + std::strlen(name));
+      free(name);
+      break;
+    }
+    free(name);
+  }
+
+  // Appearance (0x2a01) <- Device1.Appearance (uint16, little-endian on the wire).
+  uint16_t appearance = 0;
+  {
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    sd_bus_get_property_trivial(this->bus_, "org.bluez", this->device_path_.c_str(), "org.bluez.Device1", "Appearance",
+                                &err, 'q', &appearance);
+    sd_bus_error_free(&err);
+  }
+
+  static constexpr uint16_t H_SVC = 0xFF00;
+  static constexpr uint16_t H_NAME = 0xFF01;
+  static constexpr uint16_t H_APPEARANCE = 0xFF02;
+  static constexpr uint16_t H_CAR = 0xFF03;
+  static constexpr uint8_t PROP_READ = 0x02;  // esp_gatt_char_prop_t READ
+
+  DiscoveredService gap;
+  gap.uuid = BLEUUID::from_uint16(GAP_UUID);
+  gap.start_handle = H_SVC;
+  gap.end_handle = H_CAR;
+
+  auto add_char = [&](uint16_t handle, uint16_t uuid16, std::vector<uint8_t> value) {
+    DiscoveredCharacteristic dc;
+    dc.uuid = BLEUUID::from_uint16(uuid16);
+    dc.handle = handle;
+    dc.properties = PROP_READ;
+    gap.characteristics.push_back(std::move(dc));
+    this->synthetic_reads_[handle] = std::move(value);
+  };
+  add_char(H_NAME, 0x2A00, std::move(name_bytes));
+  add_char(H_APPEARANCE, 0x2A01, {(uint8_t) (appearance & 0xFF), (uint8_t) (appearance >> 8)});
+  add_char(H_CAR, 0x2AA6, {0x01});  // Central Address Resolution: supported
+
+  ESP_LOGD(TAG, "synthesized GAP service 0x1800 (3 chars) from Device1 props");
+  out.push_back(std::move(gap));
 }
 
 uint16_t BLEGattHost::acquire_mtu_() {
@@ -771,6 +848,24 @@ std::unique_ptr<uint8_t[]> read_ay(sd_bus_message *m, uint16_t &len_out) {
 }  // namespace
 
 void BLEGattHost::do_read_(uint16_t handle, bool is_desc) {
+  // Synthetic GAP (0x1800) characteristics have no BlueZ object — serve the
+  // value we cached from Device1 props at discovery time.
+  if (!is_desc) {
+    auto sit = this->synthetic_reads_.find(handle);
+    if (sit != this->synthetic_reads_.end()) {
+      HostGattEvent ev;
+      ev.kind = HostGattEvent::Kind::READ_COMPLETE;
+      ev.handle = handle;
+      ev.status = ESP_GATT_OK;
+      ev.len = (uint16_t) sit->second.size();
+      if (ev.len > 0) {
+        ev.data = std::make_unique<uint8_t[]>(ev.len);
+        std::memcpy(ev.data.get(), sit->second.data(), ev.len);
+      }
+      this->post_event_(std::move(ev));
+      return;
+    }
+  }
   auto it = this->handle_map_.find(handle);
   if (it == this->handle_map_.end()) {
     HostGattEvent ev;
@@ -976,6 +1071,7 @@ void BLEGattHost::worker_on_connected_changed(bool connected) {
     }
   } else {
     this->discovered_ = false;
+    this->discovering_ = false;
     this->handle_map_.clear();
     ev.kind = HostGattEvent::Kind::DISCONNECTED;
     this->post_event_(std::move(ev));
@@ -985,14 +1081,23 @@ void BLEGattHost::worker_on_connected_changed(bool connected) {
 // Walk the GATT tree once, build the discovery snapshot + handle maps, acquire
 // MTU, and post SERVICES_DISCOVERED. Idempotent per connection.
 void BLEGattHost::try_start_discovery_() {
-  if (this->discovered_)
+  // Guard BOTH the completed state and an in-flight walk. walk_gatt_tree_() and
+  // acquire_mtu_() below make blocking sd_bus_call*s that pump this bus and may
+  // dispatch a queued ServicesResolved/notify signal re-entrantly on this same
+  // worker thread — re-entering here. Without discovering_, the nested call would
+  // pass the discovered_==false check and build/free a second copy of the same
+  // service tree concurrently with this frame → heap corruption (use-after-free
+  // observed crashing at ble_client_base.cpp:169 under the 3-slot proxy).
+  if (this->discovered_ || this->discovering_)
     return;
+  this->discovering_ = true;
   std::vector<DiscoveredService> tree;
   if (!this->walk_gatt_tree_(tree)) {
     // A GATT object lacked a real Handle (BlueZ < 5.62) — protocol-breaking for
     // the proxy contract. Hard-fail the connection.
     ESP_LOGE(TAG, "GATT object missing Handle (need BlueZ >= 5.62); disconnecting %s",
              this->device_path_.c_str());
+    this->discovering_ = false;
     this->do_disconnect_();
     return;
   }
@@ -1001,6 +1106,7 @@ void BLEGattHost::try_start_discovery_() {
   ev.kind = HostGattEvent::Kind::SERVICES_DISCOVERED;
   ev.mtu = this->acquire_mtu_();
   ev.services = std::move(tree);
+  this->discovering_ = false;
   this->post_event_(std::move(ev));
 }
 

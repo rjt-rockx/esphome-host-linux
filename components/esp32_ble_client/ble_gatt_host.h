@@ -161,6 +161,11 @@ class BLEGattHost {
   // GATT object lacks a real Handle (hard requirement — no synthesis).
   void try_start_discovery_();
   bool walk_gatt_tree_(std::vector<DiscoveredService> &out);
+  // Append a synthetic read-only GAP service (0x1800) built from Device1
+  // properties IFF BlueZ didn't already export one (BlueZ <5.79). Keeps the
+  // GATTGetServices view byte-compatible with a stock ESP32 proxy. Populates
+  // synthetic_reads_ so do_read_ can serve the synthetic characteristics.
+  void synthesize_gap_service_(std::vector<DiscoveredService> &out);
   uint16_t acquire_mtu_();
   // sd-bus signal trampoline for PropertiesChanged on this device path.
   static int on_properties_changed_(sd_bus_message *m, void *userdata, sd_bus_error *ret_error);
@@ -177,10 +182,23 @@ class BLEGattHost {
   sd_bus *bus_{nullptr};
   sd_bus_slot *props_slot_{nullptr};
   std::atomic<bool> bus_open_{false};
-  bool discovered_{false};  // worker-only: SERVICES_DISCOVERED already posted
+  bool discovered_{false};   // worker-only: SERVICES_DISCOVERED already posted
+  bool discovering_{false};  // worker-only re-entrancy guard: a try_start_discovery_
+                             // is in flight. Blocking sd_bus_call*s inside the walk
+                             // pump the bus and dispatch queued ServicesResolved/notify
+                             // signals re-entrantly on this same thread, which would
+                             // otherwise re-enter try_start_discovery_ before discovered_
+                             // is set — two invocations mutate/free the same service tree.
 
   // worker-only handle maps for read/write/notify routing
   std::unordered_map<uint16_t, ObjEntry> handle_map_;
+  // Synthetic GAP (0x1800) characteristic reads served from Device1 properties.
+  // BlueZ <5.79 never exports the GAP service as a GattService1 (it claims it
+  // internally and surfaces Name/Appearance as Device1 props), so a stock-ESP32
+  // proxy reports 4 services where we'd report 3. We rebuild a read-only 0x1800
+  // from Device1 to stay byte-compatible with a real ESP32 GATTGetServices.
+  // handle -> fixed value bytes. do_read_ checks this before handle_map_.
+  std::unordered_map<uint16_t, std::vector<uint8_t>> synthetic_reads_;
   // notify subscriptions: char path → (handle, signal slot)
   struct NotifySub {
     uint16_t handle;

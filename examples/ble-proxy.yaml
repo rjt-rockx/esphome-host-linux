@@ -1,0 +1,18 @@
+# Step 7: host as a Home Assistant Bluetooth proxy (active connections).
+# Secret-free example (no api encryption key). For a real HA hookup with a key,
+# copy to ble-proxy.local.yaml (gitignored) and add the key there.
+esphome:
+  name: ble-proxy
+  platformio_options:
+    board_build.cmake_extra_args: >-
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+host:
+api:
+logger:
+external_components:
+  - source: {type: local, path: ../components}
+esp32_ble_tracker:
+bluetooth_proxy:
+  active: true
+  connection_slots: 3

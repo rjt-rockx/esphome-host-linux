@@ -282,6 +282,10 @@ void ESP32BLETracker::setup() {
   } else {
     this->scanner_thread_ = std::thread([this] { this->dbus_scanner_thread_main_(); });
   }
+  // Notify scanner-state listeners that scanning is running (host scan is
+  // always-on once the worker starts).
+  for (auto *l : this->scanner_state_listeners_)
+    l->on_scanner_state(ScannerState::RUNNING);
 }
 
 void ESP32BLETracker::dump_config() {
