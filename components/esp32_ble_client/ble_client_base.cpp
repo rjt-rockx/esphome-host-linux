@@ -153,10 +153,52 @@ void BLEClientBase::dispatch_event_(const HostGattEvent &ev) {
       this->set_state(espbt::ClientState::CONNECTED);
       // Step 1: no discovery yet — service discovery + ESTABLISHED arrive in Step 2.
       break;
-    case HostGattEvent::Kind::SERVICES_DISCOVERED:
+    case HostGattEvent::Kind::SERVICES_DISCOVERED: {
       this->mtu_ = ev.mtu;
+      // Build the wrapper tree (main-thread-owned) from the worker's snapshot.
+      this->release_services();
+      for (const auto &ds : ev.services) {
+        auto *svc = new BLEService();  // NOLINT(cppcoreguidelines-owning-memory)
+        svc->uuid = ds.uuid;
+        svc->start_handle = ds.start_handle;
+        svc->end_handle = ds.end_handle;
+        svc->client = this;
+        svc->parsed = true;
+        for (const auto &dc : ds.characteristics) {
+          auto *chr = new BLECharacteristic();  // NOLINT(cppcoreguidelines-owning-memory)
+          chr->uuid = dc.uuid;
+          chr->handle = dc.handle;
+          chr->properties = dc.properties;
+          chr->service = svc;
+          chr->parsed = true;
+          for (const auto &dd : dc.descriptors) {
+            auto *desc = new BLEDescriptor();  // NOLINT(cppcoreguidelines-owning-memory)
+            desc->uuid = dd.uuid;
+            desc->handle = dd.handle;
+            desc->characteristic = chr;
+            chr->descriptors.push_back(desc);
+          }
+          svc->characteristics.push_back(chr);
+        }
+        this->services_.push_back(svc);
+      }
+      ESP_LOGI(TAG, "[%s] Services resolved: %zu services, MTU %u", this->address_str_, this->services_.size(),
+               this->mtu_);
+      for (auto *svc : this->services_) {
+        char sbuf[espbt::ESPBTUUID::UUID_STR_LEN];
+        ESP_LOGD(TAG, "  SVC %s", svc->uuid.to_str(sbuf));
+        for (auto *chr : svc->characteristics) {
+          char cbuf[espbt::ESPBTUUID::UUID_STR_LEN];
+          ESP_LOGD(TAG, "    CHAR %s handle=0x%04X props=0x%02X", chr->uuid.to_str(cbuf), chr->handle, chr->properties);
+          for (auto *d : chr->descriptors) {
+            char dbuf[espbt::ESPBTUUID::UUID_STR_LEN];
+            ESP_LOGD(TAG, "      DESC %s handle=0x%04X", d->uuid.to_str(dbuf), d->handle);
+          }
+        }
+      }
       this->set_state(espbt::ClientState::ESTABLISHED);
       break;
+    }
     case HostGattEvent::Kind::DISCONNECTED: {
       ESP_LOGI(TAG, "[%s] Disconnected (reason %d)", this->address_str_, ev.disc_reason);
       this->release_services();

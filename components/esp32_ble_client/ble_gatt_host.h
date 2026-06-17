@@ -22,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <systemd/sd-bus.h>
@@ -99,8 +100,20 @@ class BLEGattHost {
   void close_bus_();
   void do_connect_();
   void do_disconnect_();
+  // Discovery: gate on ServicesResolved, walk GetManagedObjects, acquire MTU,
+  // then post SERVICES_DISCOVERED. Returns false (and posts DISCONNECTED) if a
+  // GATT object lacks a real Handle (hard requirement — no synthesis).
+  void try_start_discovery_();
+  bool walk_gatt_tree_(std::vector<DiscoveredService> &out);
+  uint16_t acquire_mtu_();
   // sd-bus signal trampoline for PropertiesChanged on this device path.
   static int on_properties_changed_(sd_bus_message *m, void *userdata, sd_bus_error *ret_error);
+
+  struct ObjEntry {
+    std::string path;
+    enum Kind : uint8_t { CHAR, DESC } kind;
+    uint16_t parent_char_handle;
+  };
 
   std::string adapter_;       // "hci0"
   std::string device_path_;   // "/org/bluez/hci0/dev_AA_BB_.."
@@ -108,6 +121,10 @@ class BLEGattHost {
   sd_bus *bus_{nullptr};
   sd_bus_slot *props_slot_{nullptr};
   std::atomic<bool> bus_open_{false};
+  bool discovered_{false};  // worker-only: SERVICES_DISCOVERED already posted
+
+  // worker-only handle maps for read/write/notify routing (later steps)
+  std::unordered_map<uint16_t, ObjEntry> handle_map_;
 
   std::mutex cmd_mu_;
   std::deque<HostGattCommand> commands_;

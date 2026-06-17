@@ -7,9 +7,39 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
+
+#include "esphome/components/esp32_ble/ble_uuid.h"
 
 namespace esphome {
 namespace esp32_ble_client {
+
+// Use the concrete UUID type (esp32_ble::ESPBTUUID); the esp32_ble_tracker
+// `espbt` alias resolves to the same type but isn't available from this header.
+using BLEUUID = esphome::esp32_ble::ESPBTUUID;
+
+// A snapshot of the discovered GATT tree, built by the worker from
+// GetManagedObjects and carried on the SERVICES_DISCOVERED event. The main
+// thread turns this into BLEService/BLECharacteristic/BLEDescriptor wrappers
+// (so those stay main-thread-owned), while the worker keeps the handle→path
+// maps it needs for read/write/notify routing.
+struct DiscoveredDescriptor {
+  BLEUUID uuid;
+  uint16_t handle;
+};
+struct DiscoveredCharacteristic {
+  BLEUUID uuid;
+  uint16_t handle;
+  uint8_t properties;  // esp_gatt_char_prop_t bitmask
+  std::vector<DiscoveredDescriptor> descriptors;
+};
+struct DiscoveredService {
+  BLEUUID uuid;
+  uint16_t start_handle;
+  uint16_t end_handle;
+  std::vector<DiscoveredCharacteristic> characteristics;
+};
 
 // Short-lived views handed to node hooks; valid only for the duration of the
 // hook call (they point into the owning HostGattEvent::data), mirroring the
@@ -52,6 +82,9 @@ struct HostGattEvent {
   int disc_reason{0};                // esp_gatt_status_t / conn-reason
   uint16_t mtu{23};                  // carried on SERVICES_DISCOVERED
   bool pairing_success{false};
+  // Populated only on SERVICES_DISCOVERED — the GATT tree snapshot the main
+  // thread turns into wrapper objects.
+  std::vector<DiscoveredService> services;
 };
 
 }  // namespace esp32_ble_client

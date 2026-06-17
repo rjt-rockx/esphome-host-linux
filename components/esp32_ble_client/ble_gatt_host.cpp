@@ -2,6 +2,7 @@
 
 #include "ble_gatt_host.h"
 
+#include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
 #include "esphome/core/log.h"
 
 #include <cerrno>
@@ -14,6 +15,8 @@
 
 namespace esphome {
 namespace esp32_ble_client {
+
+namespace espbt = esphome::esp32_ble_tracker;
 
 static const char *const TAG = "ble_gatt_host";
 
@@ -289,6 +292,201 @@ void BLEGattHost::do_disconnect_() {
   sd_bus_error_free(&err);
 }
 
+namespace {
+
+// Map a BlueZ GattCharacteristic1 "Flags" string to an esp_gatt_char_prop_t bit.
+uint8_t flag_to_prop(const char *flag) {
+  if (std::strcmp(flag, "broadcast") == 0)
+    return ESP_GATT_CHAR_PROP_BIT_BROADCAST;
+  if (std::strcmp(flag, "read") == 0)
+    return ESP_GATT_CHAR_PROP_BIT_READ;
+  if (std::strcmp(flag, "write-without-response") == 0)
+    return ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
+  if (std::strcmp(flag, "write") == 0)
+    return ESP_GATT_CHAR_PROP_BIT_WRITE;
+  if (std::strcmp(flag, "notify") == 0)
+    return ESP_GATT_CHAR_PROP_BIT_NOTIFY;
+  if (std::strcmp(flag, "indicate") == 0)
+    return ESP_GATT_CHAR_PROP_BIT_INDICATE;
+  if (std::strcmp(flag, "authenticated-signed-writes") == 0)
+    return ESP_GATT_CHAR_PROP_BIT_AUTH;
+  if (std::strcmp(flag, "extended-properties") == 0)
+    return ESP_GATT_CHAR_PROP_BIT_EXT_PROP;
+  return 0;
+}
+
+// A flat parsed GATT object from GetManagedObjects.
+struct GattObj {
+  std::string path;
+  enum { SERVICE, CHAR, DESC, OTHER } kind{OTHER};
+  espbt::ESPBTUUID uuid;
+  uint16_t handle{0};
+  bool has_handle{false};
+  std::string parent;  // Service (for char) / Characteristic (for descr)
+  uint8_t props{0};    // chars only
+};
+
+// Read one a{sv} property dict for a single interface, filling a GattObj.
+void parse_gatt_iface_props(sd_bus_message *m, const char *iface, GattObj &obj) {
+  bool is_char = std::strcmp(iface, "org.bluez.GattCharacteristic1") == 0;
+  bool is_desc = std::strcmp(iface, "org.bluez.GattDescriptor1") == 0;
+  bool is_svc = std::strcmp(iface, "org.bluez.GattService1") == 0;
+  if (is_char)
+    obj.kind = GattObj::CHAR;
+  else if (is_desc)
+    obj.kind = GattObj::DESC;
+  else if (is_svc)
+    obj.kind = GattObj::SERVICE;
+
+  sd_bus_message_enter_container(m, 'a', "{sv}");
+  for (;;) {
+    if (sd_bus_message_enter_container(m, 'e', "sv") <= 0)
+      break;
+    const char *key = nullptr;
+    sd_bus_message_read(m, "s", &key);
+    if (key != nullptr && std::strcmp(key, "UUID") == 0) {
+      const char *uuid = nullptr;
+      sd_bus_message_read(m, "v", "s", &uuid);
+      if (uuid != nullptr)
+        obj.uuid = espbt::ESPBTUUID::from_uuid_str(uuid);
+    } else if (key != nullptr && std::strcmp(key, "Handle") == 0) {
+      uint16_t h = 0;
+      if (sd_bus_message_read(m, "v", "q", &h) >= 0) {
+        obj.handle = h;
+        obj.has_handle = true;
+      }
+    } else if (key != nullptr && (std::strcmp(key, "Service") == 0 || std::strcmp(key, "Characteristic") == 0)) {
+      const char *p = nullptr;
+      sd_bus_message_read(m, "v", "o", &p);
+      if (p != nullptr)
+        obj.parent = p;
+    } else if (key != nullptr && is_char && std::strcmp(key, "Flags") == 0) {
+      sd_bus_message_enter_container(m, 'v', "as");
+      sd_bus_message_enter_container(m, 'a', "s");
+      const char *flag = nullptr;
+      while (sd_bus_message_read(m, "s", &flag) > 0)
+        if (flag != nullptr)
+          obj.props |= flag_to_prop(flag);
+      sd_bus_message_exit_container(m);
+      sd_bus_message_exit_container(m);
+    } else {
+      sd_bus_message_skip(m, "v");
+    }
+    sd_bus_message_exit_container(m);  // dict entry
+  }
+  sd_bus_message_exit_container(m);  // a{sv}
+}
+
+}  // namespace
+
+bool BLEGattHost::walk_gatt_tree_(std::vector<DiscoveredService> &out) {
+  if (this->bus_ == nullptr)
+    return false;
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  sd_bus_message *reply = nullptr;
+  int r = sd_bus_call_method(this->bus_, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects",
+                             &err, &reply, "");
+  if (r < 0) {
+    ESP_LOGW(TAG, "GetManagedObjects failed: %s", err.message ? err.message : std::strerror(-r));
+    sd_bus_error_free(&err);
+    return false;
+  }
+
+  std::vector<GattObj> objs;
+  // reply: a{oa{sa{sv}}}
+  sd_bus_message_enter_container(reply, 'a', "{oa{sa{sv}}}");
+  for (;;) {
+    if (sd_bus_message_enter_container(reply, 'e', "oa{sa{sv}}") <= 0)
+      break;
+    const char *path = nullptr;
+    sd_bus_message_read(reply, "o", &path);
+    bool under_device =
+        (path != nullptr && std::strncmp(path, this->device_path_.c_str(), this->device_path_.size()) == 0 &&
+         path[this->device_path_.size()] == '/');
+    GattObj obj;
+    if (path != nullptr)
+      obj.path = path;
+    sd_bus_message_enter_container(reply, 'a', "{sa{sv}}");
+    for (;;) {
+      if (sd_bus_message_enter_container(reply, 'e', "sa{sv}") <= 0)
+        break;
+      const char *iface = nullptr;
+      sd_bus_message_read(reply, "s", &iface);
+      bool is_gatt = iface != nullptr && (std::strcmp(iface, "org.bluez.GattService1") == 0 ||
+                                          std::strcmp(iface, "org.bluez.GattCharacteristic1") == 0 ||
+                                          std::strcmp(iface, "org.bluez.GattDescriptor1") == 0);
+      if (under_device && is_gatt) {
+        parse_gatt_iface_props(reply, iface, obj);
+      } else {
+        sd_bus_message_skip(reply, "a{sv}");
+      }
+      sd_bus_message_exit_container(reply);  // interface entry
+    }
+    sd_bus_message_exit_container(reply);  // a{sa{sv}}
+    if (under_device && obj.kind != GattObj::OTHER)
+      objs.push_back(std::move(obj));
+    sd_bus_message_exit_container(reply);  // object entry
+  }
+  sd_bus_message_exit_container(reply);  // top array
+  sd_bus_message_unref(reply);
+  sd_bus_error_free(&err);
+
+  // Assemble the tree by parent object-path links. Services first.
+  this->handle_map_.clear();
+  for (const auto &o : objs) {
+    if (o.kind != GattObj::SERVICE)
+      continue;
+    DiscoveredService svc;
+    svc.uuid = o.uuid;
+    svc.start_handle = o.handle;
+    svc.end_handle = o.handle;
+    // characteristics whose parent Service == this path
+    for (const auto &c : objs) {
+      if (c.kind != GattObj::CHAR || c.parent != o.path)
+        continue;
+      if (!c.has_handle) {
+        ESP_LOGE(TAG, "characteristic %s has no Handle", c.path.c_str());
+        return false;  // hard requirement
+      }
+      DiscoveredCharacteristic dc;
+      dc.uuid = c.uuid;
+      dc.handle = c.handle;
+      dc.properties = c.props;
+      this->handle_map_[c.handle] = ObjEntry{c.path, ObjEntry::CHAR, c.handle};
+      for (const auto &d : objs) {
+        if (d.kind != GattObj::DESC || d.parent != c.path)
+          continue;
+        if (!d.has_handle) {
+          ESP_LOGE(TAG, "descriptor %s has no Handle", d.path.c_str());
+          return false;
+        }
+        dc.descriptors.push_back(DiscoveredDescriptor{d.uuid, d.handle});
+        this->handle_map_[d.handle] = ObjEntry{d.path, ObjEntry::DESC, c.handle};
+      }
+      svc.characteristics.push_back(std::move(dc));
+    }
+    out.push_back(std::move(svc));
+  }
+  ESP_LOGD(TAG, "discovered %zu services on %s", out.size(), this->device_path_.c_str());
+  return true;
+}
+
+uint16_t BLEGattHost::acquire_mtu_() {
+  // Read GattCharacteristic1.MTU off any characteristic (BlueZ >= 5.62).
+  for (const auto &kv : this->handle_map_) {
+    if (kv.second.kind != ObjEntry::CHAR)
+      continue;
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    uint16_t mtu = 0;
+    int r = sd_bus_get_property_trivial(this->bus_, "org.bluez", kv.second.path.c_str(),
+                                        "org.bluez.GattCharacteristic1", "MTU", &err, 'q', &mtu);
+    sd_bus_error_free(&err);
+    if (r >= 0 && mtu >= 23)
+      return mtu;
+  }
+  return 23;  // fallback (the AcquireWrite probe lands in a later refinement)
+}
+
 int BLEGattHost::on_properties_changed_(sd_bus_message *m, void *userdata, sd_bus_error * /*ret_error*/) {
   auto *self = static_cast<BLEGattHost *>(userdata);
   const char *iface = nullptr;
@@ -310,6 +508,11 @@ int BLEGattHost::on_properties_changed_(sd_bus_message *m, void *userdata, sd_bu
       int connected = 0;
       sd_bus_message_read(m, "v", "b", &connected);
       self->worker_on_connected_changed(connected != 0);
+    } else if (key != nullptr && std::strcmp(key, "ServicesResolved") == 0) {
+      int resolved = 0;
+      sd_bus_message_read(m, "v", "b", &resolved);
+      if (resolved)
+        self->try_start_discovery_();
     } else {
       sd_bus_message_skip(m, "v");
     }
@@ -323,9 +526,44 @@ void BLEGattHost::worker_on_connected_changed(bool connected) {
   HostGattEvent ev;
   if (connected) {
     ev.kind = HostGattEvent::Kind::CONNECTED;
+    this->post_event_(std::move(ev));
+    // ServicesResolved may already be true (the signal won't re-fire); poll it.
+    if (this->bus_ != nullptr) {
+      sd_bus_error err = SD_BUS_ERROR_NULL;
+      int resolved = 0;
+      int r = sd_bus_get_property_trivial(this->bus_, "org.bluez", this->device_path_.c_str(), "org.bluez.Device1",
+                                          "ServicesResolved", &err, 'b', &resolved);
+      sd_bus_error_free(&err);
+      if (r >= 0 && resolved)
+        this->try_start_discovery_();
+    }
   } else {
+    this->discovered_ = false;
+    this->handle_map_.clear();
     ev.kind = HostGattEvent::Kind::DISCONNECTED;
+    this->post_event_(std::move(ev));
   }
+}
+
+// Walk the GATT tree once, build the discovery snapshot + handle maps, acquire
+// MTU, and post SERVICES_DISCOVERED. Idempotent per connection.
+void BLEGattHost::try_start_discovery_() {
+  if (this->discovered_)
+    return;
+  std::vector<DiscoveredService> tree;
+  if (!this->walk_gatt_tree_(tree)) {
+    // A GATT object lacked a real Handle (BlueZ < 5.62) — protocol-breaking for
+    // the proxy contract. Hard-fail the connection.
+    ESP_LOGE(TAG, "GATT object missing Handle (need BlueZ >= 5.62); disconnecting %s",
+             this->device_path_.c_str());
+    this->do_disconnect_();
+    return;
+  }
+  this->discovered_ = true;
+  HostGattEvent ev;
+  ev.kind = HostGattEvent::Kind::SERVICES_DISCOVERED;
+  ev.mtu = this->acquire_mtu_();
+  ev.services = std::move(tree);
   this->post_event_(std::move(ev));
 }
 
