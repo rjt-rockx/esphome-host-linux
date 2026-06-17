@@ -1,0 +1,19 @@
+# Step 1: native host GATT client connect/disconnect against the C6 GATT server.
+esphome:
+  name: ble-client-connect
+  platformio_options:
+    board_build.cmake_extra_args: >-
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+host:
+logger:
+  level: VERBOSE
+  logs:
+    ble_client_base: VERBOSE
+    ble_gatt_host: VERBOSE
+external_components:
+  - source: {type: local, path: ../components}
+esp32_ble_tracker:
+ble_client:
+  - mac_address: 40:4C:CA:57:8B:76   # C6 GATT server
+    auto_connect: true

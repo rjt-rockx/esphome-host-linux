@@ -305,11 +305,25 @@ void ESP32BLETracker::loop() {
     std::lock_guard<std::mutex> g(this->queue_mu_);
     drained.swap(this->queue_);
   }
-  if (drained.empty())
-    return;
   for (auto &device : drained) {
     for (auto *listener : this->listeners_) {
       listener->parse_device(device);
+    }
+  }
+  // Promote any client a listener just moved to DISCOVERED. Cheap fast-path:
+  // only scan clients when a state change was signalled.
+  if (!this->clients_.empty() && this->state_version_ != this->last_state_version_) {
+    this->last_state_version_ = this->state_version_;
+    this->try_promote_discovered_clients_();
+  }
+}
+
+void ESP32BLETracker::try_promote_discovered_clients_() {
+  for (auto *client : this->clients_) {
+    if (client->state() == ClientState::DISCOVERED) {
+      // On the D-Bus backend BlueZ connects while discovery is active, so we do
+      // not stop the scan here (unlike the ESP32 single-radio controller).
+      client->connect();
     }
   }
 }

@@ -55,6 +55,7 @@ CONF_HCI_BACKEND = "hci_backend"
 esp32_ble_tracker_ns = cg.esphome_ns.namespace("esp32_ble_tracker")
 ESP32BLETracker = esp32_ble_tracker_ns.class_("ESP32BLETracker", cg.Component)
 ESPBTDeviceListener = esp32_ble_tracker_ns.class_("ESPBTDeviceListener")
+ESPBTClient = esp32_ble_tracker_ns.class_("ESPBTClient", ESPBTDeviceListener)
 ESPBTDevice = esp32_ble_tracker_ns.class_("ESPBTDevice")
 ESPBTDeviceConstRef = ESPBTDevice.operator("ref").operator("const")
 
@@ -210,4 +211,10 @@ async def register_ble_device(var, config):
 async def register_raw_ble_device(var, config):
     paren = await cg.get_variable(config[CONF_ESP32_BLE_ID])
     cg.add(paren.register_listener(var))
+    return var
+
+
+async def register_client(var, config):
+    paren = await cg.get_variable(config[CONF_ESP32_BLE_ID])
+    cg.add(paren.register_client(var))
     return var

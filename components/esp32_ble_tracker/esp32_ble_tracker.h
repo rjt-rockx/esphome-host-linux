@@ -289,7 +289,20 @@ class ESP32BLETracker : public Component {
     this->listeners_.push_back(listener);
   }
 
+  // Register a GATT client so the tracker delivers scan results to it and
+  // promotes it DISCOVERED→CONNECTING. On the D-Bus backend BlueZ can connect
+  // while discovering, so promotion just calls connect() (no scan stop needed).
+  void register_client(ESPBTClient *client) {
+    client->app_id = this->app_id_counter_++;
+    client->set_tracker_state_version(&this->state_version_);
+    client->set_parent(this);
+    this->clients_.push_back(client);
+    this->listeners_.push_back(client);  // clients are also listeners (parse_device)
+  }
+
  protected:
+  void try_promote_discovered_clients_();
+
   // raw-HCI backend (opt-in)
   void scanner_thread_main_();
   bool open_hci_();
@@ -315,6 +328,10 @@ class ESP32BLETracker : public Component {
   bool use_hci_backend_{false};
 
   std::vector<ESPBTDeviceListener *> listeners_;
+  std::vector<ESPBTClient *> clients_;
+  uint8_t state_version_{0};
+  uint8_t last_state_version_{0};
+  uint8_t app_id_counter_{0};
 
   std::thread scanner_thread_;
   std::atomic<bool> stop_thread_{false};
