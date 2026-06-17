@@ -12,10 +12,12 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,6 +33,11 @@ namespace esp32_ble_tracker {
 // Re-export so downstream code can refer to esp32_ble_tracker::ESPBTUUID just
 // like the upstream tracker does via `using namespace esp32_ble;`.
 using ESPBTUUID = esp32_ble::ESPBTUUID;
+
+// Size of an "AA:BB:CC:DD:EE:FF" string including the NUL terminator. Matches
+// upstream so consumers (e.g. ble_scanner) that declare a fixed buffer of this
+// size and call address_str_to() compile unchanged.
+static constexpr size_t MAC_ADDRESS_PRETTY_BUFFER_SIZE = 18;
 
 struct ServiceData {
   ESPBTUUID uuid;
@@ -76,6 +83,14 @@ class ESPBTDevice {
   void add_tx_power(int8_t p) { this->tx_powers_.push_back(p); }
 
   std::string address_str() const;
+  // Format the MAC into a caller-provided buffer (no heap alloc), returning the
+  // buffer pointer. Mirrors upstream's signature so consumers like ble_scanner
+  // compile unchanged.
+  const char *address_str_to(std::span<char, MAC_ADDRESS_PRETTY_BUFFER_SIZE> buf) const {
+    std::snprintf(buf.data(), buf.size(), "%02X:%02X:%02X:%02X:%02X:%02X", this->address_[5], this->address_[4],
+                  this->address_[3], this->address_[2], this->address_[1], this->address_[0]);
+    return buf.data();
+  }
   uint64_t address_uint64() const;
   const uint8_t *address() const { return this->address_; }
   int get_rssi() const { return this->rssi_; }

@@ -156,12 +156,20 @@ def _patch_all(_target, _source, _env):
     _patch_host_ip_address(components_root / "network" / "ip_address.h")
     _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
 
-    for rel in [
+    # Expand the USE_ESP32 guard to also accept USE_HOST in the BLE consumer
+    # components, so stock ESPHome BLE listeners compile against our host-side
+    # esp32_ble_tracker shim. These are advertisement-parsing listeners only;
+    # they don't touch ESP-IDF directly. We patch every .h/.cpp present so the
+    # set can grow as we verify more consumers — missing dirs are skipped.
+    ble_consumer_files = [
         "ble_presence/ble_presence_device.h",
         "ble_presence/ble_presence_device.cpp",
         "ble_rssi/ble_rssi_sensor.h",
         "ble_rssi/ble_rssi_sensor.cpp",
-    ]:
+        "ble_scanner/ble_scanner.h",
+        "ble_scanner/ble_scanner.cpp",
+    ]
+    for rel in ble_consumer_files:
         _patch_ble_guard(components_root / rel)
 
     _patch(
