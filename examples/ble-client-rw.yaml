@@ -1,0 +1,51 @@
+# Step 4: write (output + ble_write action), switch, text_sensor, triggers.
+esphome:
+  name: ble-client-rw
+  platformio_options:
+    board_build.cmake_extra_args: >-
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+host:
+logger:
+  level: VERBOSE
+external_components:
+  - source: {type: local, path: ../components}
+esp32_ble_tracker:
+ble_client:
+  - mac_address: 40:4C:CA:57:8B:76
+    id: c6
+    on_connect:
+      then:
+        - logger.log: "C6 connected (trigger fired)"
+        # multi-write chain to exercise WRITE_COMPLETE advancing
+        - ble_client.ble_write:
+            id: c6
+            service_uuid: a1b2c3d4-0000-1000-8000-00805f9b0001
+            characteristic_uuid: a1b2c3d4-0000-1000-8000-00805f9b0003
+            value: [0x11, 0x22]
+        - ble_client.ble_write:
+            id: c6
+            service_uuid: a1b2c3d4-0000-1000-8000-00805f9b0001
+            characteristic_uuid: a1b2c3d4-0000-1000-8000-00805f9b0003
+            value: [0x33, 0x44]
+        - logger.log: "write chain done"
+    on_disconnect:
+      then:
+        - logger.log: "C6 disconnected (trigger fired)"
+output:
+  - platform: ble_client
+    id: write_out
+    ble_client_id: c6
+    service_uuid: a1b2c3d4-0000-1000-8000-00805f9b0001
+    characteristic_uuid: a1b2c3d4-0000-1000-8000-00805f9b0003
+switch:
+  - platform: ble_client
+    ble_client_id: c6
+    name: "C6 Connection"
+text_sensor:
+  - platform: ble_client
+    ble_client_id: c6
+    name: "Read Hex"
+    service_uuid: a1b2c3d4-0000-1000-8000-00805f9b0001
+    characteristic_uuid: a1b2c3d4-0000-1000-8000-00805f9b0002
+    update_interval: 3s
