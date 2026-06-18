@@ -1,0 +1,34 @@
+# iBeacon advertiser on the Linux host via BlueZ. Registers an org.bluez
+# LEAdvertisement1 (Type=broadcast) carrying the Apple-iBeacon manufacturer data
+# (company 0x004C) — UUID + major + minor + measured power. Scan with a phone
+# (e.g. nRF Connect / Locate Beacon), bleak, or an esp32_ble_tracker on a second
+# device and you should see the iBeacon with the UUID/major/minor below.
+#
+# No credentials are committed (host binary; no API key / OTA). BlueZ owns the
+# radio, so advertising interval / TX power are adapter-global (informational).
+esphome:
+  name: ble-beacon
+
+host:
+
+api:
+  # Standalone advertiser; may run with no native-API client. Disable the default
+  # 15-min "no clients -> reboot" watchdog so the beacon keeps broadcasting.
+  reboot_timeout: 0s
+
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+# esp32_ble is auto-loaded by esp32_ble_beacon. On host it is the advertising
+# state holder; BlueZ owns the radio.
+esp32_ble_beacon:
+  type: iBeacon
+  uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+  major: 100
+  minor: 200
+  measured_power: -59
