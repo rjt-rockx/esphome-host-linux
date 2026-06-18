@@ -172,9 +172,17 @@ void BLEGattHostThread::ensure_agent(sd_bus *bus) {
     return;
   }
   // RegisterAgent (NOT RequestDefaultAgent — never hijack the system agent).
+  // Capability "NoInputNoOutput": this is a headless host with no display/keyboard,
+  // so SMP must use the "Just Works" association model. SMP picks Just Works whenever
+  // EITHER peer is NoInputNoOutput, so this also keeps working against peers that have
+  // IO capability (e.g. an ESP32, or another BlueZ host that would otherwise negotiate
+  // Numeric Comparison — which would stall with no human to confirm the digits and
+  // fail as "Numeric comparison failed", tearing the link down before service
+  // discovery). The passkey/confirmation agent methods remain exported for callers
+  // that explicitly drive pairing via passkey_reply()/confirm_reply().
   sd_bus_error err = SD_BUS_ERROR_NULL;
   r = sd_bus_call_method(bus, "org.bluez", "/org/bluez", "org.bluez.AgentManager1", "RegisterAgent", &err, nullptr,
-                         "os", AGENT_PATH, "KeyboardDisplay");
+                         "os", AGENT_PATH, "NoInputNoOutput");
   if (r < 0) {
     ESP_LOGW(TAG, "RegisterAgent failed: %s", err.message ? err.message : std::strerror(-r));
     sd_bus_error_free(&err);
