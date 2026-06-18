@@ -1,0 +1,12 @@
+# EXPECT_ERROR: window
+esphome:
+  name: bad-scan-window
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 30ms
+    window: 320ms

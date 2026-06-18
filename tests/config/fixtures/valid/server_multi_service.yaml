@@ -1,0 +1,39 @@
+# Scenario: Linux box exposes a custom multi-service GATT peripheral.
+esphome:
+  name: server-multi
+host:
+api:
+logger:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_server:
+  manufacturer: ESPHome
+  model: Host Test
+  appearance: 0x0200
+  max_clients: 3
+  services:
+    - uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+      advertise: true
+      characteristics:
+        - id: counter
+          uuid: a1b2c3d4-0001-1000-8000-00805f9b34fb
+          read: true
+          notify: true
+          value: [0]
+          description: "Counter"
+        - id: command
+          uuid: a1b2c3d4-0002-1000-8000-00805f9b34fb
+          write: true
+          write_no_response: true
+          on_write:
+            then:
+              - logger.log: "cmd"
+    - uuid: 180f
+      characteristics:
+        - id: batt
+          uuid: 2a19
+          read: true
+          notify: true
+          value: [100]

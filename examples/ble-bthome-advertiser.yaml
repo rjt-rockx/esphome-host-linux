@@ -1,0 +1,33 @@
+# Host (Linux/BlueZ) BTHome v2 ADVERTISER. The Linux box broadcasts its own
+# readings as a BTHome Service Data advert (UUID 0xFCD2) that Home Assistant — or
+# any BTHome receiver, including esphome-host-linux's own bthome_mithermometer
+# (see ble-bthome-receiver.yaml) — can decode. There is no upstream ESPHome
+# "advertise BTHome" component; this is host-only.
+#
+# One adapter cannot hear its own adverts, so verify on-air with btmon on this
+# host (Service Data 0xFCD2 + payload) and decode on a SECOND radio (the Pi or an
+# ESP32 running bthome_mithermometer).
+esphome:
+  name: ble-bthome-advertiser
+
+host:
+
+api:
+  reboot_timeout: 0s
+
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+bthome_advertiser:
+  measurements:
+    - type: temperature
+      value: 25.06
+    - type: humidity
+      value: 50.55
+    - type: battery
+      value: 93

@@ -1,0 +1,12 @@
+# EXPECT_ERROR: connection_slots
+esphome:
+  name: bad-proxy-slots
+host:
+api:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_tracker:
+bluetooth_proxy:
+  connection_slots: 20

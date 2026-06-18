@@ -1,0 +1,12 @@
+# EXPECT_ERROR: measured_power
+esphome:
+  name: bad-beacon-power
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_beacon:
+  type: iBeacon
+  uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+  measured_power: 50

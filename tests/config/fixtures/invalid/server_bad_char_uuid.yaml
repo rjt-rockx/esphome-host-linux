@@ -1,0 +1,16 @@
+# EXPECT_ERROR: uuid
+esphome:
+  name: bad-server-charuuid
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_server:
+  services:
+    - uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+      characteristics:
+        - id: ch1
+          uuid: nonsense-not-hex
+          read: true
+          value: [0]

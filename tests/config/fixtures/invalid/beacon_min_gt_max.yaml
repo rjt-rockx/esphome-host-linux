@@ -1,0 +1,13 @@
+# EXPECT_ERROR: interval
+esphome:
+  name: bad-beacon-interval
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_beacon:
+  type: iBeacon
+  uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+  min_interval: 500ms
+  max_interval: 100ms

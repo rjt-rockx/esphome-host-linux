@@ -5,8 +5,16 @@ on:
   pull_request:
 
 jobs:
-  esphome-config:
-    name: esphome config (mac-fast path)
+  unit-tests:
+    name: unit (C++ logic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run C++ unit tests
+        run: bash tests/unit/run.sh
+
+  config-tests:
+    name: config (esphome validate + fixtures)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,14 +23,30 @@ jobs:
           python-version: "3.11"
       - run: pip install --upgrade pip
       - run: pip install esphome
-      - name: Validate all example YAMLs
+      - name: Validate examples + valid/invalid fixtures
+        run: python3 tests/config/run.py
+
+  integration-tests:
+    name: integration (host binary vs. fake org.bluez)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host build deps + dbusmock harness
         run: |
-          set -e
-          for f in examples/*.yaml; do
-            echo "::group::$f"
-            esphome config "$f"
-            echo "::endgroup::"
-          done
+          sudo apt-get update
+          sudo apt-get install -y \
+            liblgpio-dev libgpiod-dev libmosquitto-dev libsystemd-dev libmbedtls-dev build-essential \
+            python3-dbusmock python3-dbus python3-gi python3-pytest dbus
+      - name: Install esphome (isolated; invoked as a subprocess by the harness)
+        run: pipx install esphome
+      - name: Run integration tests under the system python3
+        # The harness imports dbusmock (apt, system python3) and spawns a private
+        # system bus; sd-bus in the compiled binary honors DBUS_SYSTEM_BUS_ADDRESS.
+        # Binaries are compiled on demand via the ESPHOME entrypoint.
+        run: |
+          cd tests/integration
+          unset DBUS_SYSTEM_BUS_ADDRESS
+          ESPHOME="$(command -v esphome)" python3 -m pytest -v -p no:cacheprovider
 
   esphome-compile-host:
     name: esphome compile (Linux host binary)

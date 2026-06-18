@@ -1,0 +1,32 @@
+# Minimal passive-scan gateway: presence + RSSI for one device, on the host
+# BlueZ D-Bus backend. Used by the integration scanner test (an injected advert
+# at the target MAC must drive ble_rssi/ble_presence). VERBOSE so the decoded
+# RSSI value is logged ("'<name>' >> <rssi>"); scanner lowered to DEBUG to cut noise.
+esphome:
+  name: ble-scanner
+
+host:
+
+logger:
+  level: VERBOSE
+  logs:
+    esp32_ble_tracker: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+
+binary_sensor:
+  - platform: ble_presence
+    name: "scanner presence"
+    mac_address: A4:C1:38:00:00:10
+
+sensor:
+  - platform: ble_rssi
+    name: "scanner rssi"
+    mac_address: A4:C1:38:00:00:10

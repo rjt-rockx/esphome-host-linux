@@ -1,0 +1,13 @@
+# Scenario: Linux host receives + decodes BTHome v2 sensors (stock bthome_mithermometer).
+esphome:
+  name: bthome-rx
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+esp32_ble_tracker:
+sensor:
+  - platform: bthome_mithermometer
+    mac_address: A4:C1:38:00:00:07
+    temperature: {name: t}
+    humidity: {name: h}
+    battery_level: {name: b}

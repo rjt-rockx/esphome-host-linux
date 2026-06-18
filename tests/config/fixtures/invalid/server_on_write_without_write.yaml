@@ -1,0 +1,19 @@
+# EXPECT_ERROR: write
+esphome:
+  name: bad-server-onwrite
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_server:
+  services:
+    - uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+      characteristics:
+        - id: ch1
+          uuid: a1b2c3d4-0001-1000-8000-00805f9b34fb
+          read: true
+          value: [0]
+          on_write:
+            then:
+              - logger.log: "should not validate"

@@ -1,0 +1,10 @@
+# EXPECT_ERROR: type
+esphome:
+  name: bthome-bad-type
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+bthome_advertiser:
+  measurements:
+    - type: not_a_real_measurement
+      value: 1

@@ -1,0 +1,17 @@
+# EXPECT_ERROR: max_clients
+esphome:
+  name: bad-server-clients
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_server:
+  max_clients: 99
+  services:
+    - uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+      characteristics:
+        - id: ch1
+          uuid: a1b2c3d4-0001-1000-8000-00805f9b34fb
+          read: true
+          value: [0]

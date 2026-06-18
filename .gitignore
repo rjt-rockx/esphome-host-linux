@@ -4,6 +4,8 @@ __pycache__/
 .esphome/
 .pio/
 build/
+# Compiled unit-test binaries (tests/unit/run.sh builds here).
+tests/unit/.build/
 .idea/
 .vscode/
 *.swp

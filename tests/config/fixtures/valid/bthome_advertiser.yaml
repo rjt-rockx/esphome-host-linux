@@ -1,0 +1,16 @@
+# Scenario: Linux host publishes its own readings as a BTHome v2 advert.
+esphome:
+  name: bthome-adv
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+bthome_advertiser:
+  measurements:
+    - type: temperature
+      value: 21.5
+    - type: humidity
+      value: 48
+    - type: battery
+      value: 88
+    - type: motion
+      value: true

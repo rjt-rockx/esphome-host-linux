@@ -1,0 +1,42 @@
+# Host RECEIVES + decodes a BTHome v2 advert via the stock bthome_mithermometer
+# component, enabled on host by adding it to the patch script's ble_consumer_dirs
+# (it is otherwise #ifdef USE_ESP32-guarded). Decodes temperature/humidity/
+# battery from a Service Data 0xFCD2 advert, keyed to mac_address; add `bindkey:`
+# for encrypted BTHome.
+#
+# mac_address must match the advertiser's ON-AIR source address. BlueZ may
+# advertise with a random address, so find the real one with btmon on this host
+# and set it here. For the two-host live test, point this at the Pi / ESP32
+# advertiser's address.
+esphome:
+  name: ble-bthome-receiver
+
+host:
+
+api:
+  reboot_timeout: 0s
+
+logger:
+  # VERBOSE so the decoded sensor values are logged (sensor.cpp emits the
+  # "'<name>' >> <value> <unit>" line at VERBOSE); the scanner is noisy at
+  # VERBOSE, so runtime-lower it to DEBUG.
+  level: VERBOSE
+  logs:
+    esp32_ble_tracker: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32_ble_tracker:
+
+sensor:
+  - platform: bthome_mithermometer
+    mac_address: A4:C1:38:00:00:07
+    temperature:
+      name: "BTHome temperature"
+    humidity:
+      name: "BTHome humidity"
+    battery_level:
+      name: "BTHome battery"

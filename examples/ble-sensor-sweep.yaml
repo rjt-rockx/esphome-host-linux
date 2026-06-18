@@ -43,6 +43,11 @@ sensor:
   - platform: ruuvitag
     mac_address: A4:C1:38:00:00:06
     temperature: {name: ruuvi t}
+  - platform: bthome_mithermometer
+    mac_address: A4:C1:38:00:00:07
+    temperature: {name: bthome t}
+    humidity: {name: bthome h}
+    battery_level: {name: bthome batt}
 text_sensor:
   - platform: ble_scanner
     name: scan json

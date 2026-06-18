@@ -1,0 +1,13 @@
+# Scenario: HA Bluetooth proxy on a Linux box with explicit connection slots.
+esphome:
+  name: proxy-explicit
+host:
+api:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_tracker:
+bluetooth_proxy:
+  active: true
+  connection_slots: 3

@@ -1,0 +1,16 @@
+# Scenario: dedicated-adapter passive sniffer via the raw-HCI backend.
+esphome:
+  name: scanner-hci-passive
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_tracker:
+  hci_device: hci1
+  hci_backend: true
+  scan_parameters:
+    active: false
+    continuous: true
+    interval: 100ms
+    window: 100ms

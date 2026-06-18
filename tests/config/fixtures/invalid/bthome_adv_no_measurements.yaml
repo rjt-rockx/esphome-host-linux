@@ -1,0 +1,8 @@
+# EXPECT_ERROR: measurements
+esphome:
+  name: bthome-no-meas
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+bthome_advertiser:
+  id: adv1

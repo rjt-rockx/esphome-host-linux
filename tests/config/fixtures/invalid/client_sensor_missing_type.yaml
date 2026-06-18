@@ -1,0 +1,18 @@
+# EXPECT_ERROR: type
+esphome:
+  name: bad-client-sensor-type
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_tracker:
+ble_client:
+  - mac_address: "40:4C:CA:57:8B:76"
+    id: c1
+sensor:
+  - platform: ble_client
+    ble_client_id: c1
+    name: "X"
+    service_uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+    characteristic_uuid: a1b2c3d4-0001-1000-8000-00805f9b34fb

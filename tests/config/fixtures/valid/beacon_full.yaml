@@ -1,0 +1,17 @@
+# Scenario: indoor-positioning iBeacon advertiser, all knobs set.
+esphome:
+  name: beacon-full
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_beacon:
+  type: iBeacon
+  uuid: 2686f39c-bada-4658-854a-a62e7e5e8b8d
+  major: 1
+  minor: 0
+  min_interval: 100ms
+  max_interval: 200ms
+  measured_power: -55
+  tx_power: 3dBm

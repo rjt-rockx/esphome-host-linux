@@ -1,0 +1,10 @@
+# EXPECT_ERROR: mac_address
+esphome:
+  name: bthome-rx-nomac
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+esp32_ble_tracker:
+sensor:
+  - platform: bthome_mithermometer
+    temperature: {name: t}

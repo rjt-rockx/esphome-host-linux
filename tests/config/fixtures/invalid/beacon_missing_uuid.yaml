@@ -1,0 +1,10 @@
+# EXPECT_ERROR: uuid
+esphome:
+  name: bad-beacon-nouuid
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_beacon:
+  type: iBeacon

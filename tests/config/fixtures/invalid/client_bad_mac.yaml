@@ -1,0 +1,12 @@
+# EXPECT_ERROR: mac
+esphome:
+  name: bad-client-mac
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+esp32_ble_tracker:
+ble_client:
+  - mac_address: "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ"
+    id: c1

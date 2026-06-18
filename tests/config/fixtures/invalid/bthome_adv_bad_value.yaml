@@ -1,0 +1,10 @@
+# EXPECT_ERROR: value
+esphome:
+  name: bthome-bad-value
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+bthome_advertiser:
+  measurements:
+    - type: temperature
+      value: "not a number"

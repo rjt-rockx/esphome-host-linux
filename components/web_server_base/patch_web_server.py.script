@@ -197,6 +197,7 @@ def _patch_all(_target, _source, _env):
         "thermopro_ble",
         "atc_mithermometer",
         "pvvx_mithermometer",
+        "bthome_mithermometer",
         "b_parasite",
         # Xiaomi per-device wrappers (each is a thin listener over xiaomi_ble).
         "xiaomi_lywsd03mmc",

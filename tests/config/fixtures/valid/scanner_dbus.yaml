@@ -1,0 +1,21 @@
+# Scenario: passive BLE scanner on the default BlueZ D-Bus backend.
+# The most common Linux deployment — a sensor/presence gateway that listens to
+# advertisements without owning the adapter exclusively (coexists with bluetoothd).
+esphome:
+  name: scanner-dbus
+host:
+api:
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 320ms
+    window: 30ms
+    active: true
+    continuous: true
