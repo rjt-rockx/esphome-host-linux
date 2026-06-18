@@ -1,0 +1,92 @@
+# Step-10 COEXISTENCE: one host binary running, simultaneously, every BLE role on
+# the Linux/BlueZ backend:
+#   - a GATT SERVER  (esp32_ble_server)  -> shared esp32_ble::BleWorker loop
+#   - an iBeacon     (esp32_ble_beacon)  -> shared esp32_ble::BleWorker loop
+#   - a GATT CLIENT  (ble_client)        -> separate esp32_ble_client::BLEGattHostThread loop
+# Proves the two worker threads (BleWorker + BLEGattHostThread) coexist in one
+# process against one bluetoothd: the server serves + the beacon advertises while
+# the client scans, connects, reads and subscribes to a peripheral (the C6 GATT
+# server, fixtures/c6-gatt-server.yaml). All three share hci0 (BlueZ multiplexes
+# advertising + scanning + connections).
+#
+# No credentials committed. The C6 MAC below is documented test hardware (same as
+# the other ble-client-*.yaml examples). Drive/observe over the native API +
+# btmon/busctl, not serial.
+esphome:
+  name: ble-coexist
+
+host:
+
+api:
+  reboot_timeout: 0s
+
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+# --- Role 1: GATT server (BleWorker) ---
+esp32_ble_server:
+  manufacturer: ESPHome
+  model: Host BLE Coexist
+  services:
+    - uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+      advertise: true
+      characteristics:
+        - id: coexist_counter
+          uuid: a1b2c3d4-0001-1000-8000-00805f9b34fb
+          read: true
+          notify: true
+          value: [0]
+        - id: coexist_label
+          uuid: a1b2c3d4-0003-1000-8000-00805f9b34fb
+          read: true
+          value: "coexist"
+
+# --- Role 2: iBeacon advertiser (BleWorker) ---
+esp32_ble_beacon:
+  type: iBeacon
+  uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+  major: 100
+  minor: 200
+
+# --- Role 3: GATT client -> C6 GATT server (BLEGattHostThread) ---
+esp32_ble_tracker:
+
+ble_client:
+  - mac_address: 40:4C:CA:57:8B:76
+    id: c6_server
+    on_connect:
+      then:
+        - logger.log: "COEXIST: GATT client connected to C6 server"
+    on_disconnect:
+      then:
+        - logger.log: "COEXIST: GATT client disconnected from C6 server"
+
+sensor:
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: c6_server
+    id: c6_notify
+    name: "C6 notify char"
+    service_uuid: a1b2c3d4-0000-1000-8000-00805f9b0001
+    characteristic_uuid: a1b2c3d4-0000-1000-8000-00805f9b0004
+    notify: true
+    lambda: |-
+      if (x.empty()) return 0.0f;
+      ESP_LOGI("coexist", "C6 notify -> %d", (int) x[0]);
+      return (float) x[0];
+
+# Bump the server's own counter every 5s and notify its subscribers.
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          static uint8_t n = 0;
+          n++;
+          id(coexist_counter)->set_value(std::vector<uint8_t>{n});
+      - ble_server.characteristic.notify:
+          id: coexist_counter
