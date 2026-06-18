@@ -13,7 +13,8 @@ PI ?=
 HOST_DIR := esphome-host-linux
 EXAMPLE ?= examples/01-gpio-button-led.yaml
 RSYNC_EXCLUDES := --exclude .git --exclude .esphome --exclude .pio \
-                  --exclude __pycache__ --exclude .DS_Store --exclude build
+                  --exclude __pycache__ --exclude .DS_Store --exclude build \
+                  --exclude references --exclude secrets.yaml --exclude '*.local.yaml'
 
 .PHONY: help validate sync bootstrap compile run logs info clean _require-pi
 
