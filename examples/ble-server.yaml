@@ -1,0 +1,80 @@
+# GATT server on the Linux host via BlueZ. Exports a custom service (read/write/
+# notify) plus an auto-built Device Information Service, registers it with
+# bluetoothd (GattManager1.RegisterApplication) and advertises it
+# (LEAdvertisingManager1). Connect with a phone / nRF Connect / bluetoothctl and
+# you should see the service, be able to read/write the characteristics, and
+# subscribe to notifications.
+#
+# No credentials are committed here (host binary; no API key / OTA). Drive it over
+# the native API or web_server, and use bluetoothctl/dbus-monitor for BlueZ truth.
+esphome:
+  name: ble-server
+
+host:
+
+api:
+  # This host binary is a standalone BLE GATT server; it may run with no Home
+  # Assistant / native-API client connected. Disable the default 15-min
+  # "no clients -> reboot" watchdog so the server stays up on its own.
+  reboot_timeout: 0s
+
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+# esp32_ble is auto-loaded by esp32_ble_server. On host it is the advertising
+# state holder; BlueZ owns the radio.
+esp32_ble_server:
+  manufacturer: ESPHome
+  model: Host BLE Server
+  appearance: 0x0200  # Generic Tag
+  services:
+    - uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
+      advertise: true
+      characteristics:
+        # Read + notify: a counter the host bumps and notifies on a timer.
+        - id: counter_char
+          uuid: a1b2c3d4-0001-1000-8000-00805f9b34fb
+          read: true
+          notify: true
+          value: [0]
+        # Write: clients write a byte; we log it via on_write.
+        - id: command_char
+          uuid: a1b2c3d4-0002-1000-8000-00805f9b34fb
+          write: true
+          write_no_response: true
+          on_write:
+            then:
+              - logger.log:
+                  format: "command_char written: %d bytes, first=0x%02X"
+                  args: ["(int) x.size()", "x.empty() ? 0 : x[0]"]
+        # Read-only static text.
+        - id: label_char
+          uuid: a1b2c3d4-0003-1000-8000-00805f9b34fb
+          read: true
+          value: "esphome-host-linux"
+  on_connect:
+    then:
+      - logger.log:
+          format: "central connected: conn_id=%u"
+          args: ["id"]
+  on_disconnect:
+    then:
+      - logger.log:
+          format: "central disconnected: conn_id=%u"
+          args: ["id"]
+
+# Bump the counter every 5s and notify subscribers.
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          static uint8_t n = 0;
+          n++;
+          id(counter_char)->set_value(std::vector<uint8_t>{n});
+      - ble_server.characteristic.notify:
+          id: counter_char

@@ -62,15 +62,23 @@ class ESPBTUUID {
       u.raw_[i] = data[15 - i];
     return u;
   }
+  // Explicit "N already-binary bytes" form (raw memcpy). Kept for completeness;
+  // nothing in-tree currently calls it (binary callers use from_raw(const uint8_t*)).
   static ESPBTUUID from_raw(const char *data, size_t length);
-  static ESPBTUUID from_raw(const char *data) { return from_raw(data, std::strlen(data)); }
   // Parse a canonical UUID string as BlueZ reports it, e.g.
   // "0000fdf7-0000-1000-8000-00805f9b34fb" (always 128-bit form). Stored
   // reversed (LSB-first), matching from_raw_reversed / the as_reversed_hex_array
   // codegen path so service-UUID comparisons line up.
   static ESPBTUUID from_uuid_str(const char *s);
   static ESPBTUUID from_uuid_str(const std::string &s) { return from_uuid_str(s.c_str()); }
-  static ESPBTUUID from_raw(const std::string &s) { return from_raw(s.c_str(), s.size()); }
+  // Upstream ESPBTUUID::from_raw(std::string)/(const char*) PARSE a hex UUID
+  // string (this is the esp32_ble_server parse_uuid() codegen path and
+  // BLEService::create_characteristic(std::string)). The shim's earlier raw-memcpy
+  // behavior exported custom 128-bit UUIDs as their ASCII bytes — centrals then
+  // never matched the characteristic. Delegate to from_uuid_str so the hex is
+  // parsed, keeping the codegen byte-identical to upstream.
+  static ESPBTUUID from_raw(const char *data) { return from_uuid_str(data); }
+  static ESPBTUUID from_raw(const std::string &s) { return from_uuid_str(s.c_str()); }
   // Build from the esp_bt_uuid_t union form (GATT server / advertising codegen).
   static ESPBTUUID from_uuid(const esp_bt_uuid_t &uuid) {
     if (uuid.len == ESP_UUID_LEN_16)

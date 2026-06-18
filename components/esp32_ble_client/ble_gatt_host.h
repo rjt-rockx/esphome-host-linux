@@ -57,14 +57,30 @@ struct HostGattCommand {
 
 class BLEGattHost;
 
+// Anything that owns an sd_bus attached to the shared worker loop and needs its
+// command queue drained once per loop iteration implements this. BLEGattHost is
+// one; the GATT server (esp32_ble_server) is another. Lets the worker service
+// both without depending on their concrete types.
+struct BusWorkerClient {
+  virtual ~BusWorkerClient() = default;
+  // Run on the worker thread after each sd_event_run return: drain the client's
+  // main-thread→worker command queue and dispatch to D-Bus.
+  virtual void worker_process_commands() = 0;
+};
+
 // Process-global worker: one thread, one sd_event loop, services every
-// BLEGattHost's bus. Created lazily on first connect, joined at process exit.
+// attached BusWorkerClient's bus. Created lazily on first use, joined at exit.
 class BLEGattHostThread {
  public:
   static BLEGattHostThread &instance();
   // Register/unregister a host so the worker can service its bus + command queue.
   void attach(BLEGattHost *host);
   void detach(BLEGattHost *host);
+  // Generic worker-client registration (e.g. the GATT server). The worker calls
+  // worker_process_commands() on each attached client after every loop pass. The
+  // client is responsible for attaching its own bus to event().
+  void attach_worker_client(BusWorkerClient *client);
+  void detach_worker_client(BusWorkerClient *client);
   // Wake the event loop to process newly-queued commands.
   void wake();
   sd_event *event() { return this->event_; }
@@ -96,6 +112,7 @@ class BLEGattHostThread {
   int wake_fd_{-1};  // eventfd to wake the loop from other threads
   std::mutex hosts_mu_;
   std::vector<BLEGattHost *> hosts_;
+  std::vector<BusWorkerClient *> worker_clients_;  // generic (server, …); same mutex
   std::mutex pending_mu_;
 
   // Agent1 (non-default). Registered once on the first pairing-capable client.
@@ -107,10 +124,10 @@ class BLEGattHostThread {
 // path (not tied to any org) so this works as a generic library.
 static constexpr const char *AGENT_PATH = "/org/esphome/host/ble/agent";
 
-class BLEGattHost {
+class BLEGattHost : public BusWorkerClient {
  public:
   BLEGattHost(std::string adapter, std::string device_path);
-  ~BLEGattHost();
+  ~BLEGattHost() override;
 
   // --- main-thread command API (thread-safe enqueue + worker wakeup) ---
   void connect();
@@ -133,7 +150,7 @@ class BLEGattHost {
   const std::string &device_path() const { return this->device_path_; }
 
   // --- worker-thread internals (public for the worker dispatcher) ---
-  void worker_process_commands();  // run on worker: drain command queue → D-Bus
+  void worker_process_commands() override;  // run on worker: drain command queue → D-Bus
   void worker_on_connected_changed(bool connected);
 
  protected:

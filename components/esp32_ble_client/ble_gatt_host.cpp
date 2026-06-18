@@ -73,12 +73,16 @@ void BLEGattHostThread::run_() {
       break;
     }
     std::vector<BLEGattHost *> snapshot;
+    std::vector<BusWorkerClient *> client_snapshot;
     {
       std::lock_guard<std::mutex> g(this->hosts_mu_);
       snapshot = this->hosts_;
+      client_snapshot = this->worker_clients_;
     }
     for (auto *h : snapshot)
       h->worker_process_commands();
+    for (auto *c : client_snapshot)
+      c->worker_process_commands();
   }
 
   if (this->wake_source_ != nullptr)
@@ -103,6 +107,25 @@ void BLEGattHostThread::detach(BLEGattHost *host) {
   for (auto it = this->hosts_.begin(); it != this->hosts_.end(); ++it) {
     if (*it == host) {
       this->hosts_.erase(it);
+      break;
+    }
+  }
+}
+
+void BLEGattHostThread::attach_worker_client(BusWorkerClient *client) {
+  this->ensure_started_();
+  {
+    std::lock_guard<std::mutex> g(this->hosts_mu_);
+    this->worker_clients_.push_back(client);
+  }
+  this->wake();
+}
+
+void BLEGattHostThread::detach_worker_client(BusWorkerClient *client) {
+  std::lock_guard<std::mutex> g(this->hosts_mu_);
+  for (auto it = this->worker_clients_.begin(); it != this->worker_clients_.end(); ++it) {
+    if (*it == client) {
+      this->worker_clients_.erase(it);
       break;
     }
   }
