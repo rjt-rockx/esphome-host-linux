@@ -4,22 +4,18 @@
 #ifdef USE_HOST
 
 // BLEGattServer — the only D-Bus-aware code in the GATT server. Exports the
-// service tree built by the esp32_ble_server shadow classes as an org.bluez
-// object tree (ObjectManager + GattService1/GattCharacteristic1/GattDescriptor1
-// vtables), registers it via GattManager1.RegisterApplication on the adapter, and
-// (as an esp32_ble::AdvertisingBackend) advertises via LEAdvertisingManager1.
+// service tree as an org.bluez object tree (ObjectManager + GattService1/
+// GattCharacteristic1/GattDescriptor1 vtables), registers it via
+// GattManager1.RegisterApplication on the adapter, and (as an
+// esp32_ble::AdvertisingBackend) advertises via LEAdvertisingManager1.
 //
-// Threading uses the shared sd_event worker (esp32_ble::BleWorker), the same loop
-// the GATT client uses. This server attaches its own bus to that loop and is an
-// attached BusWorkerClient, so notify() commands posted from the main thread are
-// drained on the worker. ReadValue/WriteValue/StartNotify/StopNotify arrive on
-// the worker and are routed straight to the shadow objects (their on_read/on_write
-// callbacks run on the worker — same contract as the client's notify callbacks).
-// Connect/disconnect are observed via Device1.Connected and posted back to the
-// main thread, where BLEServer::loop() dispatches on_connect/on_disconnect.
-//
-// The worker lives in esp32_ble (the BLE base this component already auto-loads),
-// so the server does NOT depend on the GATT *client* component to share the loop.
+// Threading uses the shared sd_event worker (esp32_ble::BleWorker). This server
+// attaches its own bus to that loop and is an attached BusWorkerClient, so
+// notify() commands posted from the main thread are drained on the worker.
+// ReadValue/WriteValue/StartNotify/StopNotify arrive on the worker and are routed
+// straight to the BLE objects (their on_read/on_write callbacks run on the
+// worker). Connect/disconnect are observed via Device1.Connected and posted back
+// to the main thread, where BLEServer::loop() dispatches on_connect/on_disconnect.
 
 #include "esphome/components/esp32_ble/ble.h"
 #include "esphome/components/esp32_ble/ble_host_thread.h"
@@ -92,7 +88,7 @@ class BLEGattServer : public esp32_ble::BusWorkerClient, public esp32_ble::Adver
   explicit BLEGattServer(BLEServer *owner) : owner_(owner) {}
   ~BLEGattServer() override;
 
-  // Build the object tree from the shadow service list and register with BlueZ.
+  // Build the object tree from the service list and register with BlueZ.
   // Called once from BLEServer::setup() on the main thread.
   void start(const std::vector<BLEService *> &services);
 
@@ -183,12 +179,11 @@ class BLEGattServer : public esp32_ble::BusWorkerClient, public esp32_ble::Adver
   void register_advertisement_(const esp32_ble::HostAdvertisement &adv);
   static int on_register_adv_reply_(sd_bus_message *reply, void *userdata, sd_bus_error *ret_error);
   void unregister_advertisement_();
-  // Re-advertise after a central disconnects. The Intel AX211 + kernel 6.17 ext-adv
-  // auto-resume path is unreliable (BlueZ does nothing on disconnect; the kernel
-  // tries hci_enable_advertising but the ext-adv re-enable often fails — github
-  // bluez#644). We force a fresh advertising set by Unregister+Register after a
-  // short debounce. If even that fails (#644 "Invalid Parameters"), power-cycle the
-  // adapter once and retry. Runs entirely on the worker thread (it owns the bus).
+  // Re-advertise after a central disconnects. The kernel's ext-adv auto-resume on
+  // disconnect is unreliable on some adapters (the ext-adv re-enable often fails —
+  // github bluez#644), so force a fresh advertising set by Unregister+Register
+  // after a short debounce. If that still fails ("Invalid Parameters"), power-cycle
+  // the adapter once and retry. Runs entirely on the worker thread (it owns the bus).
   void schedule_readvertise_();              // arm/re-arm the debounce timer
   static int on_readvertise_timer_(sd_event_source *s, uint64_t usec, void *userdata);
   void power_cycle_adapter_();               // Adapter1.Powered false->true (last resort)

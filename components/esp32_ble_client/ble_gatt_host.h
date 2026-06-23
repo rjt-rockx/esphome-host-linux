@@ -8,9 +8,6 @@
 // a single shared sd_event worker thread (BLEGattHostThread); commands are
 // posted from the main thread and results come back as HostGattEvent on a
 // mutex-guarded deque drained in BLEClientBase::loop().
-//
-// Step 1 scope: connect / disconnect + Device1.Connected signal + connect
-// timeout. Discovery, read/write/notify, MTU, pairing land in later steps.
 
 #include "host_gatt_event.h"
 
@@ -179,8 +176,7 @@ class BLEGattHost : public BusWorkerClient {
   void try_start_discovery_();
   bool walk_gatt_tree_(std::vector<DiscoveredService> &out);
   // Append a synthetic read-only GAP service (0x1800) built from Device1
-  // properties IFF BlueZ didn't already export one (BlueZ <5.79). Keeps the
-  // GATTGetServices view byte-compatible with a stock ESP32 proxy. Populates
+  // properties IFF BlueZ didn't already export one (BlueZ <5.79). Populates
   // synthetic_reads_ so do_read_ can serve the synthetic characteristics.
   void synthesize_gap_service_(std::vector<DiscoveredService> &out);
   uint16_t acquire_mtu_();
@@ -211,9 +207,8 @@ class BLEGattHost : public BusWorkerClient {
   std::unordered_map<uint16_t, ObjEntry> handle_map_;
   // Synthetic GAP (0x1800) characteristic reads served from Device1 properties.
   // BlueZ <5.79 never exports the GAP service as a GattService1 (it claims it
-  // internally and surfaces Name/Appearance as Device1 props), so a stock-ESP32
-  // proxy reports 4 services where we'd report 3. We rebuild a read-only 0x1800
-  // from Device1 to stay byte-compatible with a real ESP32 GATTGetServices.
+  // internally and surfaces Name/Appearance as Device1 props); we rebuild a
+  // read-only 0x1800 from those props so the service tree is complete.
   // handle -> fixed value bytes. do_read_ checks this before handle_map_.
   std::unordered_map<uint16_t, std::vector<uint8_t>> synthetic_reads_;
   // notify subscriptions: char path → (handle, signal slot)

@@ -39,14 +39,12 @@ void BLECharacteristic::set_value(const std::string &buffer) {
 void BLECharacteristic::notify() {
   if (this->gatt_server_ == nullptr)
     return;
-  // Emitting a Value PropertiesChanged on the worker thread; BlueZ delivers to
-  // subscribed (StartNotify'd) clients only. The server marshals main->worker.
+  // Emit a Value PropertiesChanged; BlueZ delivers it to StartNotify'd clients
+  // only. The server marshals this from the main thread to the worker.
   this->gatt_server_->notify_characteristic(this, this->value_);
 }
 
 void BLECharacteristic::add_descriptor(BLEDescriptor *descriptor) {
-  // No CCCD write tracking on host: BlueZ owns the 0x2902 and StartNotify/
-  // StopNotify drive subscription. The server filters the 0x2902 at export.
   this->descriptors_.push_back(descriptor);
 }
 

@@ -1,12 +1,11 @@
-"""Host (Linux/BlueZ) shadow of esp32_ble_server.
+"""Host (Linux/BlueZ) esp32_ble_server.
 
-Codegen contract is byte-identical to upstream esp32_ble_server so stock
-ble_server YAML compiles unchanged. Host transforms vs upstream:
-  - DEPENDENCIES drops "esp32"; no add_idf_sdkconfig_option.
-  - The device-information service's model default falls back to a host string
-    instead of CORE.data["esp32"]["board"].
-  - register_gatts_event_handler / register_ble_status_event_handler are host
-    no-ops (BlueZ delivers GATT-server events directly to BLEGattServer).
+Host-specific behavior:
+  - DEPENDENCIES has no "esp32".
+  - The device-information service's model defaults to a host string
+    (_HOST_DEFAULT_MODEL) when no project name is set.
+  - register_gatts_event_handler / register_ble_status_event_handler are no-ops
+    (BlueZ delivers GATT-server events directly to BLEGattServer).
 The C++ tree is exported as an org.bluez object tree and registered with one
 GattManager1.RegisterApplication (see ble_gatt_server.cpp).
 """
@@ -77,7 +76,7 @@ FIRMWARE_VERSION_CHARACTERISTIC_UUID = 0x2A26
 # Suffix of the Bluetooth Base UUID used to expand 16/32 bit UUIDs to 128 bit.
 _BASE_UUID_SUFFIX = "-0000-1000-8000-00805F9B34FB"
 
-# Host fallback for the DIS model (upstream uses CORE.data["esp32"]["board"]).
+# Fallback for the device-information-service model when no project name is set.
 _HOST_DEFAULT_MODEL = "ESPHome Host"
 
 

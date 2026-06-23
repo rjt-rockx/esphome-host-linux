@@ -16,9 +16,9 @@ namespace espbt = esphome::esp32_ble_tracker;
 using esp32_ble_client::BLEReadResult;
 using esp32_ble_client::BLENotifyEvent;
 
-// Native-host port of upstream BLESensor (characteristic type). Reads (poll)
-// and/or subscribes to notifications on a characteristic, parsing the value to
-// a float via the configured lambda or the default presentation parse.
+// Sensor backed by a GATT characteristic. Polls reads and/or subscribes to
+// notifications, parsing the value to a float via the configured lambda or the
+// default (first byte) parse.
 class BLESensor : public sensor::Sensor, public PollingComponent, public BLEClientNode {
  public:
   void update() override;

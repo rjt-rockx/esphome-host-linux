@@ -1,8 +1,7 @@
 #pragma once
 
-// Host-side esp32_ble_tracker replacement: scans BLE advertisements via a
-// Linux HCI raw socket and dispatches to registered listeners using the same
-// API surface that upstream ble_presence / ble_rssi consume.
+// Host-side esp32_ble_tracker: scans BLE advertisements (via BlueZ D-Bus or a
+// raw HCI socket) and dispatches them to registered listeners.
 
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
@@ -27,16 +26,13 @@
 // (this component only builds for the host platform).
 #include <systemd/sd-bus.h>
 
-// On ESP-IDF `esp_bt_uuid_t` is a global C typedef; some consumers (e.g.
-// thermopro_ble) reference it unqualified. Expose our stand-in at global scope
-// so those compile unchanged on host.
+// Expose esp_bt_uuid_t at global scope: some consumers reference it unqualified,
+// as it is a global C typedef on ESP-IDF.
 using esp_bt_uuid_t = esphome::esp32_ble::esp_bt_uuid_t;
 
-// --- Portable stand-ins for ESP-IDF GATT symbols that survive in GATT-client/
-// server consumer signatures. Values match ESP-IDF numerics so existing
-// bit-tests and (== ESP_GATT_OK) comparisons in stock components are correct.
-// These are real, honestly-typed host values — NOT an emulation of the IDF
-// event model (the native BLEGattHost drives BlueZ directly). Global scope +
+// --- Stand-ins for ESP-IDF GATT symbols that appear in GATT consumer
+// signatures. Numeric values MUST match ESP-IDF's so bit-tests and
+// (== ESP_GATT_OK) comparisons in those consumers stay correct. Global scope +
 // per-symbol #ifndef so they coexist with anything else providing them.
 #ifndef ESP_OK
 #define ESP_OK 0
@@ -50,8 +46,8 @@ const char *esp_err_to_name(esp_err_t err);  // small table; falls back to "host
 // esp_err_to_name is also referenced unqualified by some consumers.
 using esphome::esp32_ble_tracker::esp_err_to_name;
 
-// esp_gatt_status_t — the proxy forwards these to Home Assistant; numerics MUST
-// equal ESP-IDF's esp_gatt_status_t.
+// esp_gatt_status_t — numeric values MUST equal ESP-IDF's (forwarded verbatim
+// over the wire to clients).
 using esp_gatt_status_t = int;
 enum {
   ESP_GATT_OK = 0x0,
@@ -72,7 +68,7 @@ enum {
   ESP_GATT_MAX_ATTR_LEN = 600,
 };
 
-// esp_gatt_char_prop_t — portable bitmask; values == ESP-IDF.
+// esp_gatt_char_prop_t — characteristic-property bitmask; values == ESP-IDF.
 using esp_gatt_char_prop_t = uint8_t;
 enum {
   ESP_GATT_CHAR_PROP_BIT_BROADCAST = 0x01,
@@ -85,7 +81,7 @@ enum {
   ESP_GATT_CHAR_PROP_BIT_EXT_PROP = 0x80,
 };
 
-// Write-type + auth-req enums still named in unported am43/automation bodies.
+// Write-type + auth-req enums named in some GATT-client consumer bodies.
 using esp_gatt_write_type_t = int;
 enum { ESP_GATT_WRITE_TYPE_NO_RSP = 1, ESP_GATT_WRITE_TYPE_RSP = 2 };
 using esp_gatt_auth_req_t = int;
@@ -94,17 +90,14 @@ enum { ESP_GATT_AUTH_REQ_NONE = 0 };
 namespace esphome {
 namespace esp32_ble_tracker {
 
-// Re-export so downstream code can refer to esp32_ble_tracker::ESPBTUUID just
-// like the upstream tracker does via `using namespace esp32_ble;`.
+// Re-export so downstream code can refer to esp32_ble_tracker::ESPBTUUID.
 using ESPBTUUID = esp32_ble::ESPBTUUID;
 
-// Size of an "AA:BB:CC:DD:EE:FF" string including the NUL terminator. Matches
-// upstream so consumers (e.g. ble_scanner) that declare a fixed buffer of this
-// size and call address_str_to() compile unchanged.
+// Size of an "AA:BB:CC:DD:EE:FF" string including the NUL terminator. Consumers
+// declare fixed buffers of this size for address_str_to().
 static constexpr size_t MAC_ADDRESS_PRETTY_BUFFER_SIZE = 18;
 
-// Matches upstream: the manufacturer/service-data byte payload type used by
-// some parsers (e.g. ruuvi_ble) as `esp32_ble_tracker::adv_data_t`.
+// Manufacturer/service-data byte payload type used by some parsers.
 using adv_data_t = std::vector<uint8_t>;
 
 struct ServiceData {
@@ -152,8 +145,7 @@ class ESPBTDevice {
 
   std::string address_str() const;
   // Format the MAC into a caller-provided buffer (no heap alloc), returning the
-  // buffer pointer. Mirrors upstream's signature so consumers like ble_scanner
-  // compile unchanged.
+  // buffer pointer.
   const char *address_str_to(std::span<char, MAC_ADDRESS_PRETTY_BUFFER_SIZE> buf) const {
     std::snprintf(buf.data(), buf.size(), "%02X:%02X:%02X:%02X:%02X:%02X", this->address_[5], this->address_[4],
                   this->address_[3], this->address_[2], this->address_[1], this->address_[0]);
@@ -214,8 +206,7 @@ class ESPBTDeviceListener {
   ESP32BLETracker *parent_{nullptr};
 };
 
-// Mirrors upstream esp32_ble_tracker::ClientState so esp32_ble_client and
-// consumers see the same state machine.
+// GATT-client connection state machine, shared with GATT-client consumers.
 enum class ClientState : uint8_t {
   INIT,
   DISCONNECTING,
@@ -234,8 +225,8 @@ enum class ConnectionType : uint8_t {
   V3_WITHOUT_CACHE,
 };
 
-// Scanner state, mirrored from upstream. On the host D-Bus backend the scan is
-// effectively always running once started; RUNNING is reported.
+// Scanner state. On host the scan is effectively always running once started,
+// so RUNNING is what gets reported.
 enum class ScannerState {
   IDLE,
   STARTING,
@@ -255,11 +246,10 @@ enum class AdvertisementParserType {
   RAW_ADVERTISEMENTS,
 };
 
-/// Base class for GATT clients the tracker drives. On host the GATT transport
-/// is BlueZ D-Bus (a native esp32_ble_client::BLEClientBase implements connect/
-/// discover/read/write/notify against org.bluez — no ESP-IDF emulation). The
-/// tracker only needs the connection-lifecycle contract below; it promotes a
-/// DISCOVERED client to CONNECTING by calling connect(), and reads state().
+/// Base class for GATT clients the tracker drives; the host transport is BlueZ
+/// D-Bus. The tracker only needs the connection-lifecycle contract below: it
+/// promotes a DISCOVERED client to CONNECTING by calling connect(), and reads
+/// state().
 class ESPBTClient : public ESPBTDeviceListener {
  public:
   virtual void connect() = 0;
@@ -300,9 +290,9 @@ class ESP32BLETracker : public Component {
   void set_scan_window_ms(uint32_t ms) { this->scan_window_ms_ = ms; }
   void set_scan_active(bool active) { this->scan_active_ = active; }
   void set_scan_continuous(bool cont) { this->scan_continuous_ = cont; }
-  // Backend select: default is BlueZ D-Bus (coexists with bluetoothd/HA).
+  // Backend select: default is BlueZ D-Bus (coexists with bluetoothd).
   // hci_backend=true uses the raw-HCI scanner, which needs an adapter the
-  // daemon isn't managing (see references/ble-host CHARTER §2 item T).
+  // daemon isn't managing.
   void set_use_hci_backend(bool use_hci) { this->use_hci_backend_ = use_hci; }
 
   void setup() override;
@@ -315,15 +305,15 @@ class ESP32BLETracker : public Component {
     this->listeners_.push_back(listener);
   }
 
-  // Scanner-state listeners (bluetooth_proxy). On host the scan is always-on
-  // once started, so we report RUNNING; the listener is notified at setup.
+  // On host the scan is always-on once started, so RUNNING is reported; listeners
+  // are notified at setup.
   void add_scanner_state_listener(BLEScannerStateListener *l) { this->scanner_state_listeners_.push_back(l); }
   ScannerState get_scanner_state() const { return ScannerState::RUNNING; }
   bool get_scan_active() const { return this->scan_active_; }
 
   // Register a GATT client so the tracker delivers scan results to it and
-  // promotes it DISCOVERED→CONNECTING. On the D-Bus backend BlueZ can connect
-  // while discovering, so promotion just calls connect() (no scan stop needed).
+  // promotes it DISCOVERED→CONNECTING. BlueZ can connect while discovering, so
+  // promotion just calls connect() (no scan stop needed).
   void register_client(ESPBTClient *client) {
     client->app_id = this->app_id_counter_++;
     client->set_tracker_state_version(&this->state_version_);

@@ -37,10 +37,10 @@ esp32_ble_tracker:
 binary_sensor:
   - platform: ble_presence
     name: "BLE Presence Test"
-    mac_address: 40:4C:CA:57:8B:76  # C6 beacon (ground truth)
+    mac_address: 40:4C:CA:57:8B:76  # set to your beacon's MAC
     timeout: 1min
 
 sensor:
   - platform: ble_rssi
     name: "BLE RSSI Test"
-    mac_address: 40:4C:CA:57:8B:76  # C6 beacon (ground truth)
+    mac_address: 40:4C:CA:57:8B:76  # set to your beacon's MAC

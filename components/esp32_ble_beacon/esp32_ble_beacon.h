@@ -16,15 +16,13 @@
 namespace esphome {
 namespace esp32_ble_beacon {
 
-// Host (Linux/BlueZ) iBeacon advertiser. Standalone: it registers its OWN
-// org.bluez LEAdvertisement1 (Type="broadcast") carrying the Apple-iBeacon
-// ManufacturerData (company 0x004C), on the shared esp32_ble::BleWorker event
-// loop — independent of the GATT server's advertisement. A distinct object path
-// (BEACON_ADV_PATH) lets the two coexist (Step 10). The on-air payload mirrors
-// upstream esp32_ble_beacon's esp_ble_ibeacon_t exactly (0x02 0x15 prefix +
-// 16-byte proximity UUID + major/minor big-endian + measured power), but is
-// emitted via D-Bus instead of esp_ble_gap_config_adv_data_raw. BlueZ prepends
-// the AD length/type/company-id and the Flags AD, so we provide only the value.
+// Host (Linux/BlueZ) iBeacon advertiser. Registers its own org.bluez
+// LEAdvertisement1 (Type="broadcast") carrying the Apple-iBeacon ManufacturerData
+// (company 0x004C) on the shared esp32_ble::BleWorker event loop, independent of
+// the GATT server's advertisement; a distinct object path (BEACON_ADV_PATH) lets
+// the two coexist. The on-air iBeacon value is 0x02 0x15 prefix + 16-byte
+// proximity UUID + major/minor big-endian + measured power. BlueZ prepends the AD
+// length/type/company-id and the Flags AD, so only the value is provided here.
 static constexpr const char *BEACON_ADV_PATH = "/org/esphome/host/ble/beacon/advertisement0";
 
 class ESP32BLEBeacon : public Component, public esp32_ble::BusWorkerClient {
@@ -59,8 +57,7 @@ class ESP32BLEBeacon : public Component, public esp32_ble::BusWorkerClient {
   bool open_bus_();
   // Worker-thread bring-up: open the bus, export the LEAdvertisement1, and fire
   // RegisterAdvertisement asynchronously (BlueZ reads our properties back before
-  // replying, so a blocking call would starve the worker loop — same contract as
-  // the GATT server's advertising registration).
+  // replying, so a blocking call would starve the worker loop).
   void do_start_();
   void register_advertisement_();
   static int on_register_adv_reply_(sd_bus_message *reply, void *userdata, sd_bus_error *ret_error);

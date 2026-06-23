@@ -5,17 +5,16 @@
 # you should see the service, be able to read/write the characteristics, and
 # subscribe to notifications.
 #
-# No credentials are committed here (host binary; no API key / OTA). Drive it over
-# the native API or web_server, and use bluetoothctl/dbus-monitor for BlueZ truth.
+# Drive it over the native API or web_server, and use bluetoothctl/dbus-monitor
+# to inspect the BlueZ side.
 esphome:
   name: ble-server
 
 host:
 
 api:
-  # This host binary is a standalone BLE GATT server; it may run with no Home
-  # Assistant / native-API client connected. Disable the default 15-min
-  # "no clients -> reboot" watchdog so the server stays up on its own.
+  # Standalone GATT server; may run with no native-API client. Disable the
+  # default 15-min "no clients -> reboot" watchdog so it stays up on its own.
   reboot_timeout: 0s
 
 logger:

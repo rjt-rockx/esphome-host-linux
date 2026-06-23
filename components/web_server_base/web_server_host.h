@@ -31,9 +31,8 @@ class WebServer;
 #endif
 namespace web_server_idf {
 
-// HTTP method enum compatible with the http_method values used by upstream
-// web_server.cpp. Numeric values match libhttp-parser's http_method which is
-// what esp_http_server exposes.
+// HTTP method enum. Numeric values must match libhttp-parser's http_method,
+// since web_server compares against those values directly.
 enum HttpMethod {
   HTTP_GET = 1,
   HTTP_POST = 3,
@@ -342,8 +341,7 @@ class AsyncEventSourceResponse {
   std::mutex fd_mu_;
   std::vector<DeferredEvent> deferred_queue_;
   esphome::web_server::WebServer *web_server_;
-  // ListEntitiesIterator's host-branch ctor is (WebServer*, AsyncEventSource*).
-  // It walks entity types and queues a deferred event per entity on `server_`.
+  // Walks entity types and queues a deferred state event per entity.
   esphome::web_server::ListEntitiesIterator entities_iterator_;
   std::string event_buffer_;
   size_t event_bytes_sent_{0};

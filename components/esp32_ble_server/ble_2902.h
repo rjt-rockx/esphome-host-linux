@@ -8,11 +8,10 @@
 namespace esphome {
 namespace esp32_ble_server {
 
-// Client Characteristic Configuration Descriptor (CCCD, 0x2902). On host this is
-// inert: BlueZ owns the CCCD and drives notify subscription via StartNotify/
-// StopNotify, so BLEGattServer never exports a 0x2902 GattDescriptor1. Kept only
-// so anything that still constructs a BLE2902 compiles. Never codegen'd (the
-// Python create_notify_cccd path's 0x2902 is filtered at export).
+// Client Characteristic Configuration Descriptor (CCCD, 0x2902). Inert on host:
+// BlueZ owns the CCCD and drives notify subscription via StartNotify/StopNotify,
+// so a 0x2902 GattDescriptor1 is never exported. Kept so code that constructs a
+// BLE2902 still compiles.
 class BLE2902 : public BLEDescriptor {
  public:
   BLE2902();

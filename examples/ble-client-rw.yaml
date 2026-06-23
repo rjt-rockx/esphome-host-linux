@@ -1,4 +1,5 @@
-# Step 4: write (output + ble_write action), switch, text_sensor, triggers.
+# GATT write (output + ble_write action), connection switch, read text_sensor,
+# and connect/disconnect triggers.
 esphome:
   name: ble-client-rw
   platformio_options:
@@ -17,7 +18,7 @@ ble_client:
     on_connect:
       then:
         - logger.log: "C6 connected (trigger fired)"
-        # multi-write chain to exercise WRITE_COMPLETE advancing
+        # chained writes to the same characteristic
         - ble_client.ble_write:
             id: c6
             service_uuid: a1b2c3d4-0000-1000-8000-00805f9b0001

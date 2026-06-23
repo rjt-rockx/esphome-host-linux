@@ -110,8 +110,8 @@ class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
     return flags;
   }
 
-  // On host the adapter MAC isn't readily exposed without a BlueZ query; HA only
-  // uses this cosmetically, so report empty (matches upstream's null-MAC path).
+  // The adapter MAC isn't readily exposed without a BlueZ query; HA only uses
+  // this cosmetically, so report empty.
   void get_bluetooth_mac_address_pretty(std::span<char, 18> output) { output[0] = '\0'; }
 
  protected:

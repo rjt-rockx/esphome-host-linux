@@ -1,16 +1,15 @@
 """Shadow esphome.components.mqtt for host.
 
-Upstream mqtt restricts its schema to ESP32 / ESP8266 / BK72XX / RTL87XX via
-`cv.only_on(...)` and statically picks an MQTTBackend implementation per
-platform. We:
+The stock mqtt component restricts its schema to ESP32 / ESP8266 / BK72XX /
+RTL87XX via `cv.only_on(...)` and statically picks an MQTTBackend per platform.
+This shadow:
 
-1. Monkey-patch cv.only_on at import time so the host platform isn't rejected.
-2. Re-execute upstream's __init__.py inside this module so the schema, schema
-   helpers, and to_code coroutine come from upstream verbatim (any new keys
-   the upstream adds upstream-side flow through automatically).
-3. Wrap to_code so on host we also copy mqtt_backend_host.{cpp,h} into the
-   build's component dir and register a pre-script that patches
-   mqtt_client.{h,cpp} to use the host backend.
+1. Monkey-patches cv.only_on at import time so host isn't rejected.
+2. Re-executes the stock __init__.py inside this module so its schema, helpers,
+   and to_code coroutine pass through verbatim.
+3. Wraps to_code so on host it also copies mqtt_backend_host.{cpp,h} into the
+   build and registers a pre-script that patches mqtt_client.{h,cpp} to use the
+   host backend.
 """
 
 from __future__ import annotations
@@ -53,12 +52,11 @@ _upstream_dir = Path(_esphome.__file__).parent / "components" / "mqtt"
 __path__ = [str(_upstream_dir)]
 
 
-# ESPHome's source-tree copy only ships files declared as resources by the
-# *active* component module (`importlib.resources.files(package).iterdir()`).
-# Since our shadow's package directory only holds the host backend + this
-# __init__.py, upstream's mqtt_sensor.h / mqtt_client.cpp / etc. never make
-# it into the build. Mirror them into our shadow dir at module-load time so
-# resource discovery and esphome.h codegen pick them up.
+# ESPHome ships only files found in the active component's package directory
+# (via importlib.resources). This shadow dir holds just the host backend and
+# this __init__.py, so the stock mqtt_sensor.h / mqtt_client.cpp / etc. would
+# never reach the build. Mirror them in at module-load time so resource
+# discovery and esphome.h codegen find them.
 _shadow_dir = Path(__file__).parent
 _upstream_marker = _shadow_dir / ".upstream_synced"
 import shutil as _shutil  # noqa: E402
@@ -90,9 +88,8 @@ async def to_code(config):  # noqa: F811 — override upstream coroutine.
         return
 
     cg.add_build_flag("-pthread")
-    # Link with libmosquitto. add_library() targets PIO's registry which has
-    # no "mosquitto" package; raw -l flag through PIO build_flags is the
-    # idiomatic way for native deps.
+    # Link libmosquitto. add_library() resolves against PIO's registry, which
+    # has no "mosquitto" package, so pass the system lib via a raw -l flag.
     CORE.add_platformio_option("build_flags", ["-lmosquitto"])
 
     # The pre-script is what actually drops upstream-mqtt sources and our

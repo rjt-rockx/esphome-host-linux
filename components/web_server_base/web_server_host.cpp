@@ -409,10 +409,9 @@ bool AsyncWebServer::parse_request_(int fd, HttpMethod &method, std::string &url
     url = path_full.substr(0, q);
     query = path_full.substr(q + 1);
   }
-  // web_server.cpp's match_url compares raw URL bytes against decoded entity
-  // names ("Relay 1"), so callers using the canonical name form arrive as
-  // "/switch/Relay%201/turn_on" and miss every handler. Decode the path here;
-  // query stays encoded (find_query_value_ decodes per-parameter).
+  // URL matching compares the path against decoded entity names ("Relay 1"),
+  // so the percent-encoded path ("/switch/Relay%201/turn_on") must be decoded
+  // to match. The query stays encoded; find_query_value_ decodes per-parameter.
   url = url_decode_(url);
 
   // Headers.
@@ -468,14 +467,12 @@ void AsyncWebServer::handle_connection_(int fd) {
   auto *req = new AsyncWebServerRequest(this, fd, method, std::move(url), std::move(query), std::move(headers),
                                         std::move(body));
   this->dispatch_(req);
-  // If the request's fd was taken (SSE handoff), don't delete the request — the
-  // handler now owns it. Otherwise destruct, which closes the socket.
+  // If the fd was taken (SSE handoff), the handler now owns the request; leave
+  // it alive. Otherwise destructing it below closes the socket.
   if (req->get_fd() < 0) {
-    // fd handed off; leave request alive (the new owner is responsible).
     return;
   }
   if (!req->response_sent_) {
-    // Handler didn't respond. Send a 204.
     req->send(204);
   }
   delete req;
@@ -489,8 +486,7 @@ void AsyncWebServer::dispatch_(AsyncWebServerRequest *req) {
   }
   for (auto *h : snapshot) {
     if (h->canHandle(req)) {
-      // Deliver body via handleBody if non-empty (web_server's POST path
-      // doesn't actually require it, but match the upstream interface).
+      // Deliver a non-empty body via handleBody before handleRequest.
       if (!req->body().empty()) {
         h->handleBody(req, reinterpret_cast<uint8_t *>(const_cast<char *>(req->body().data())), req->body().size(), 0,
                       req->body().size());
@@ -538,8 +534,8 @@ void AsyncEventSource::handleRequest(AsyncWebServerRequest *request) {
   }
   if (this->on_connect_)
     this->on_connect_(session);
-  // WebServer::loop() disables itself when no SSE clients are connected. Wake
-  // it back up now so subsequent ticks process this session.
+  // The web server stops looping when no SSE clients are connected; wake it so
+  // subsequent ticks service this session.
   this->web_server_->enable_loop_soon_any_context();
 }
 
@@ -671,9 +667,9 @@ void AsyncEventSourceResponse::deq_push_back_with_dedup_(void *source, message_g
 
 void AsyncEventSourceResponse::deferrable_send_state(void *source, const char *event_type,
                                                      message_generator_t *message_generator) {
-  // Match the IDF impl: enqueue. process_deferred_queue_() drains in loop().
+  // Enqueue; process_deferred_queue_() drains it in loop().
   this->deq_push_back_with_dedup_(source, message_generator);
-  // event_type ignored on host: WebServer's generators already encode it.
+  // event_type is ignored: the message generators already encode it.
   (void) event_type;
 }
 

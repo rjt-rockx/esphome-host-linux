@@ -12,7 +12,7 @@ out="$here/.build"
 mkdir -p "$out"
 
 CXX="${CXX:-g++}"
-# std::span (used by ble_uuid.h) requires C++20, matching the esphome host build.
+# std::span (used by ble_uuid.h) requires C++20.
 CXXFLAGS="${CXXFLAGS:--std=c++20 -O1 -Wall -Wextra -DUSE_HOST}"
 
 fail=0

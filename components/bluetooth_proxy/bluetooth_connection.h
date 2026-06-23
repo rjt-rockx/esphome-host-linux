@@ -11,16 +11,13 @@ namespace espbt = esphome::esp32_ble_tracker;
 class BluetoothProxy;
 
 // One active GATT connection slot the proxy manages on behalf of Home Assistant.
-// Native host port: the IDF gattc/gap event handlers are replaced by the
-// BLEClientBase node-style hooks, which fan results back to aioesphomeapi.
+// Results are fanned back to the API client via BLEClientBase node-style hooks.
 class BluetoothConnection final : public esp32_ble_client::BLEClientBase {
  public:
   void dump_config() override;
   void loop() override;
 
-  // Handle-based wrappers the proxy calls — forward to the promoted
-  // BLEClientBase primitives (kept as named methods so the proxy code reads the
-  // same as upstream).
+  // Handle-based wrappers the proxy calls — forward to the BLEClientBase primitives.
   esp_err_t read_characteristic(uint16_t handle) { return BLEClientBase::read_characteristic(handle); }
   esp_err_t write_characteristic(uint16_t handle, const uint8_t *data, size_t length, bool response) {
     return BLEClientBase::write_characteristic(handle, data, length, response);
@@ -43,8 +40,8 @@ class BluetoothConnection final : public esp32_ble_client::BLEClientBase {
  protected:
   friend class BluetoothProxy;
 
-  // The proxy connection consumes worker events directly via the base seam
-  // (it is not a BLEClientNode), fanning results to aioesphomeapi.
+  // The proxy connection consumes worker events directly (it is not a
+  // BLEClientNode), fanning results to the API client.
   void dispatch_event_(const esp32_ble_client::HostGattEvent &ev) override;
   void on_disconnect_complete(esp_err_t reason) override;
   void send_service_for_discovery_();

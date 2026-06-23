@@ -16,12 +16,11 @@
 #if defined(USE_ESP32) || defined(USE_HOST)
 #ifdef USE_HOST
 
-// Host shadow of esp32_ble_server's BLEServer. Upstream this drives the IDF gatts
-// app-register → create-service → start-service state machine; on host the whole
-// tree is built at codegen time and exported in one GattManager1.RegisterApplication
-// by the BLEGattServer. setup() builds that server, registers it as the parent
-// ESP32BLE's AdvertisingBackend, and kicks registration; loop() drains
-// connect/disconnect events the server posts and dispatches on_connect/on_disconnect.
+// Host BLEServer. The whole GATT tree is built at codegen time and exported in
+// one GattManager1.RegisterApplication by the BLEGattServer. setup() builds that
+// server, registers it as the parent ESP32BLE's AdvertisingBackend, and kicks
+// registration; loop() drains connect/disconnect events the server posts and
+// dispatches on_connect/on_disconnect.
 
 namespace esphome {
 namespace esp32_ble_server {
@@ -55,7 +54,7 @@ class BLEServer : public Component, public Parented<ESP32BLE> {
   void enqueue_start_service(BLEService *service) { this->services_to_start_.push_back(service); }
   void set_device_information_service(BLEService *service) { this->device_information_service_ = service; }
 
-  // Stub IDF accessors kept for source-compat with anything that names them.
+  // Stub accessors kept for source-compat with code that names them.
   int get_gatts_if() { return 0; }
   uint32_t get_connected_client_count() { return this->clients_.size(); }
   const uint16_t *get_clients() const { return this->clients_.data(); }

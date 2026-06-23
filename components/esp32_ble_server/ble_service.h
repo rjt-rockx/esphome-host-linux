@@ -6,10 +6,9 @@
 #if defined(USE_ESP32) || defined(USE_HOST)
 #ifdef USE_HOST
 
-// Host shadow of esp32_ble_server's BLEService. A data holder owning its
-// characteristics; BLEGattServer exports it as an org.bluez GattService1. The
-// IDF create/start state machine collapses — characteristics are allocated
-// immediately and the whole tree goes out in one RegisterApplication.
+// Host BLEService: a data holder owning its characteristics; BLEGattServer exports
+// it as an org.bluez GattService1. Characteristics are allocated immediately and
+// the whole tree goes out in one RegisterApplication.
 
 #include <cstdint>
 #include <string>

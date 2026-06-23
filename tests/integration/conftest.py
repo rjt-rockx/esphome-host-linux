@@ -1,12 +1,12 @@
 """Fake-BlueZ integration harness for the esphome-host-linux BLE components.
 
 Spins up a private D-Bus *system* bus with a python-dbusmock `org.bluez` mock, then
-runs the REAL compiled esphome host binary against it (sd-bus honors
-DBUS_SYSTEM_BUS_ADDRESS, which PrivateDBus sets — no code change to the binary).
-This exercises the actual D-Bus code paths (scanner, GATT client/server, beacon,
-BTHome advertiser) deterministically, with no Bluetooth hardware, and lets us
-inject the non-happy-path events (disconnect, bluetoothd restart, adapter loss,
-RegisterApplication/Advertisement errors, pre-connected device).
+runs the REAL compiled esphome host binary against it. sd-bus honors
+DBUS_SYSTEM_BUS_ADDRESS (which PrivateDBus sets), so the binary talks to the mock
+unmodified. This exercises the actual D-Bus code paths (scanner, GATT
+client/server, beacon, BTHome advertiser) deterministically, with no Bluetooth
+hardware, and injects non-happy-path events (disconnect, bluetoothd restart,
+adapter loss, RegisterApplication/Advertisement errors, pre-connected device).
 
 Boundary: dbusmock validates the D-Bus *contract* (what the binary offers/calls on
 org.bluez). It does NOT exercise the radio — on-air bytes / legacy-vs-extended PDU
@@ -137,9 +137,8 @@ class BluezMock:
 
     def stub_advertising_manager(self):
         """Override LEAdvertisingManager1.Register/UnregisterAdvertisement with clean
-        recorded no-ops. The bluez5 template ships its own, but its bookkeeping
-        raises a KeyError in 0.31.1; we only need deterministic success here (on-air
-        behavior is covered by the live btmon tier)."""
+        recorded no-ops, for deterministic success. On-air behavior is covered by the
+        live btmon tier."""
         for name, sig in (("RegisterAdvertisement", "oa{sv}"), ("UnregisterAdvertisement", "o")):
             self.adapter().AddMethod(
                 "org.bluez.LEAdvertisingManager1", name, sig, "", "", interface_name=MOCK_IFACE
@@ -197,7 +196,7 @@ class BluezMock:
         }
         full.update(props)
         d = dbus.Dictionary(full, signature="sv")
-        # AddObject is container-safe (UpdateProperties is not, in dbusmock 0.31).
+        # AddObject handles container props (e.g. ServiceData); UpdateProperties does not.
         self.mock.obj.AddObject(
             path, DEV_IFACE, d, dbus.Array([], signature="(ssss)")
         )

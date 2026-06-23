@@ -43,10 +43,9 @@ hardware (manual; `references/ble-host/RUN-LOG.md`).
   implemented.** The host survives the event (no crash — tests above), but does
   not by itself re-`StartDiscovery` / re-`RegisterApplication` once org.bluez
   returns. In production a service manager (systemd) restarts the host binary,
-  which re-registers cleanly. The components do not yet watch
-  `org.freedesktop.DBus` `NameOwnerChanged` for org.bluez. Adding that watch to
-  the scanner/server/advertisers is the natural follow-up; it was scoped out as
-  not "contained" to a single component this pass.
+  which re-registers cleanly. The components do not watch `org.freedesktop.DBus`
+  `NameOwnerChanged` for org.bluez; adding that watch to the
+  scanner/server/advertisers would close this gap.
 
 ## Live tier (real radios, manual) — see `references/ble-host/RUN-LOG.md`
 

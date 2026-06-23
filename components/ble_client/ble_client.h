@@ -16,9 +16,8 @@ using namespace esp32_ble_client;
 
 class BLEClient;
 
-// A node attached to a BLEClient connection. Replaces upstream's two IDF event
-// virtuals (gattc/gap_event_handler) with discrete, default-no-op hooks so
-// unported third-party nodes still compile.
+// A node attached to a BLEClient connection. Exposes discrete, default-no-op
+// hooks for GATT/pairing events fanned out by the parent BLEClient.
 class BLEClientNode {
  public:
   virtual void on_connected() {}

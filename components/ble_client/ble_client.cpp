@@ -109,9 +109,9 @@ void BLEClient::dispatch_event_(const HostGattEvent &ev) {
 }
 
 void BLEClient::loop() {
-  // Drain + dispatch the worker events (runs dispatch_event_ for each).
+  // Drain + dispatch worker events first, then run each node's loop hook.
+  // Nodes may rely on seeing dispatched events before their own loop() runs.
   BLEClientBase::loop();
-  // Then each node's own loop hook (am43 relies on this order).
   for (auto *node : this->nodes_)
     node->loop();
 }

@@ -25,15 +25,13 @@ class BLEGattHost;
 
 static const int UNSET_CONN_ID = 0xFFFF;
 
-// Native host GATT client base. Implements the upstream BLEClientBase public
-// surface directly on BlueZ D-Bus (via BLEGattHost) — NOT an emulation of the
-// ESP-IDF gattc event model. Events from the worker are drained in loop() and
-// fanned out through the dispatch_event_ seam (BLEClient overrides it to reach
-// nodes).
+// GATT client base implemented directly on BlueZ D-Bus (via BLEGattHost).
+// Events from the worker thread are drained in loop() and fanned out through the
+// dispatch_event_ seam (BLEClient overrides it to reach nodes).
 class BLEClientBase : public espbt::ESPBTClient, public Component {
  public:
   BLEClientBase();
-  ~BLEClientBase() override;  // defined in .cpp where BLEGattHost is complete
+  ~BLEClientBase() override;  // defined in .cpp where BLEGattHost is a complete type
 
   void setup() override;
   void loop() override;
@@ -82,10 +80,9 @@ class BLEClientBase : public espbt::ESPBTClient, public Component {
 
   void set_state(espbt::ClientState st) override;
 
-  // --- native handle-based primitives (proxy + characteristic wrappers call
-  // these with the same names/signatures the proxy already uses). Step 1
-  // provides the connect/disconnect path; read/write/notify land in later steps
-  // (here they return NOT_CONNECTED until implemented).
+  // --- handle-based primitives: enqueue the operation on the BlueZ worker;
+  // results arrive later as HostGattEvents. Return NOT_CONNECTED unless the link
+  // is ESTABLISHED.
   esp_err_t read_characteristic(uint16_t handle);
   esp_err_t write_characteristic(uint16_t handle, const uint8_t *data, size_t length, bool response);
   esp_err_t read_descriptor(uint16_t handle);

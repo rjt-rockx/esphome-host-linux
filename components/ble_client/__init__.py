@@ -1,8 +1,7 @@
-"""Shadow ble_client for the host platform (native BlueZ GATT client).
+"""ble_client for the host platform (native BlueZ GATT client).
 
-Step 1 scope: a connectable BLEClient with auto_connect + node registration.
-Triggers/actions (on_connect/on_disconnect/ble_write/pairing) are added in the
-later build steps. Drops the esp32 dependency.
+Provides a connectable BLEClient with auto_connect, node registration, and the
+connect/disconnect/write/pairing triggers and actions.
 """
 
 from __future__ import annotations

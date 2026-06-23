@@ -44,7 +44,6 @@ esp_err_t BLECharacteristic::write_value(uint8_t *new_val, int16_t new_val_size,
 }
 
 esp_err_t BLECharacteristic::read_value(std::function<void(const BLEReadResult &)> && /*cb*/) {
-  // Routing of the per-char callback lands in Step 3; for now trigger the read.
   if (this->service == nullptr || this->service->client == nullptr)
     return ESP_GATT_NOT_CONNECTED;
   return this->service->client->read_characteristic(this->handle);

@@ -1,4 +1,4 @@
-# Step 1: native host GATT client connect/disconnect against the C6 GATT server.
+# Native host GATT client: connect/disconnect against a BLE peripheral.
 esphome:
   name: ble-client-connect
   platformio_options:
@@ -15,5 +15,5 @@ external_components:
   - source: {type: local, path: ../components}
 esp32_ble_tracker:
 ble_client:
-  - mac_address: 40:4C:CA:57:8B:76   # C6 GATT server
+  - mac_address: 40:4C:CA:57:8B:76   # set to your peripheral's MAC
     auto_connect: true

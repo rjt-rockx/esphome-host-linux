@@ -1,13 +1,12 @@
-"""Shadow esp32_ble_tracker for host.
+"""Host esp32_ble_tracker component.
 
-Replaces upstream esp32_ble_tracker with a Linux/HCI raw socket backed
-implementation so that stock components like ble_presence and ble_rssi
-compile and operate on a Raspberry Pi without any ESP-IDF dependencies.
+A Linux BLE-scanning implementation (BlueZ D-Bus or raw HCI socket) so that
+components like ble_presence and ble_rssi run on a Raspberry Pi without any
+ESP-IDF dependencies.
 
-YAML surface is intentionally trimmed: the upstream component exposes scan
-parameters, automation triggers, etc. We accept the same keys for YAML
-compatibility but only honor `scan_parameters.{duration,interval,window,
-active,continuous}` on host. Triggers are accepted but no-op for now.
+The YAML surface accepts the full set of keys for compatibility but only honors
+`scan_parameters.{duration,interval,window,active,continuous}` on host.
+Automation triggers are accepted but currently no-op.
 """
 
 from __future__ import annotations
@@ -98,9 +97,8 @@ def _validate_scan_parameters(config):
     return config
 
 
-# Trigger placeholders so upstream-style YAML doesn't error out. On host we
-# accept the schema but the triggers are unused (no advertisement automation
-# is emitted yet).
+# Trigger placeholder so advertisement-automation YAML validates. The schema is
+# accepted but the trigger is currently unused (no automation is emitted).
 ESPBTAdvertiseTrigger = esp32_ble_tracker_ns.class_(
     "ESPBTAdvertiseTrigger", automation.Trigger.template(ESPBTDeviceConstRef)
 )
@@ -110,9 +108,9 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(ESP32BLETracker),
         cv.Optional(CONF_HCI_DEVICE, default="hci0"): cv.string,
-        # Default backend is BlueZ D-Bus (coexists with bluetoothd/HA). Set
-        # hci_backend: true for the raw-HCI scanner (needs an adapter not owned
-        # by bluetoothd; gets byte-exact adverts). See references/ble-host CHARTER.
+        # Default backend is BlueZ D-Bus, which coexists with bluetoothd. Set
+        # hci_backend: true for the raw-HCI scanner, which needs an adapter not
+        # owned by bluetoothd but yields byte-exact advertisements.
         cv.Optional(CONF_HCI_BACKEND, default=False): cv.boolean,
         cv.Optional(CONF_SCAN_PARAMETERS, default={}): cv.All(
             cv.Schema(
@@ -173,20 +171,19 @@ async def to_code(config):
     cg.add_global(esp32_ble_tracker_ns.using)
     if CORE.is_host:
         cg.add_build_flag("-pthread")
-        # D-Bus (default) backend links libsystemd for sd-bus. Always linked so
-        # both backends are available; the raw-HCI path uses no extra libs.
+        # libsystemd provides sd-bus for the D-Bus backend. (The raw-HCI path
+        # needs no extra libs.)
         cg.add_build_flag("-lsystemd")
-        # Some advertisement parsers (e.g. xiaomi_ble) decrypt payloads with
-        # mbedtls AES-CCM. Link libmbedcrypto so they build/run on host.
+        # libmbedcrypto provides the AES-CCM used by advertisement parsers (e.g.
+        # xiaomi_ble) that decrypt payloads.
         cg.add_build_flag("-lmbedcrypto")
         _ensure_ble_patch_script()
 
 
 def _ensure_ble_patch_script():
     """Copy patch_web_server.py.script into the build dir and register it as a
-    pre-script. The script also patches USE_ESP32 guards in ble_presence /
-    ble_rssi so they accept USE_HOST. Idempotent against web_server_base also
-    registering the same script."""
+    pre-script (which also patches USE_ESP32 guards in ble_presence / ble_rssi to
+    accept USE_HOST). Idempotent: skips re-registering if already present."""
     script_src = (
         Path(__file__).parent.parent
         / "web_server_base"

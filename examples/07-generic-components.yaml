@@ -4,11 +4,10 @@
 #   - interval (recurring action)
 #   - template switch (state machine + lambda)
 #   - template button (one-shot action)
-#   - logger, api, mdns (already validated)
+#   - logger, api, mdns
 #
-# No real wiring needed. Useful for verifying the ESPHome runtime, scheduler,
-# protobuf API, and Home Assistant integration work end-to-end on Pi without
-# touching peripherals.
+# No real wiring needed. Exercises the ESPHome runtime, scheduler, protobuf API,
+# and Home Assistant integration without touching peripherals.
 
 esphome:
   name: pi-generic-test

@@ -1,8 +1,6 @@
-# Host RECEIVES + decodes a BTHome v2 advert via the stock bthome_mithermometer
-# component, enabled on host by adding it to the patch script's ble_consumer_dirs
-# (it is otherwise #ifdef USE_ESP32-guarded). Decodes temperature/humidity/
-# battery from a Service Data 0xFCD2 advert, keyed to mac_address; add `bindkey:`
-# for encrypted BTHome.
+# Host receives and decodes a BTHome v2 advert via the stock bthome_mithermometer
+# component. Decodes temperature/humidity/battery from a Service Data 0xFCD2
+# advert, keyed to mac_address; add `bindkey:` for encrypted BTHome.
 #
 # mac_address must match the advertiser's ON-AIR source address. BlueZ may
 # advertise with a random address, so find the real one with btmon on this host

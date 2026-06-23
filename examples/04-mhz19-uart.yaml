@@ -1,8 +1,5 @@
-# Phase 4 smoke test: stock mhz19 CO2 sensor over UART.
-#
-# ESPHome's host platform already has a working UART implementation in
-# uart_component_host.{h,cpp} that uses Linux termios on a device path.
-# We just point it at /dev/ttyAMA0 and use the stock mhz19 driver.
+# mhz19 CO2 sensor over UART. ESPHome's host platform handles uart: with a
+# device path natively, so the stock mhz19 driver works unmodified.
 #
 # Wiring (BCM numbering):
 #   - MH-Z19 TXD -> Pi RXD (GPIO15, header pin 10)

@@ -1,4 +1,4 @@
-"""Shadow ble_client/text_sensor — read/notify a characteristic as text (hex)."""
+"""ble_client/text_sensor — read/notify a characteristic as text (hex)."""
 
 from __future__ import annotations
 

@@ -1,16 +1,13 @@
-"""Compatibility shims for running upstream ESPHome components on the host
-platform.
+"""Compatibility shims for running ESPHome components on the host platform.
 
-Holds fixes that are too narrow to deserve their own external component but
-don't belong inside any one of our linux_* protocol components: missing
-upstream symbol definitions, header-only workarounds, etc. Each .cpp in this
-directory guards itself with USE_HOST and __has_include so the file compiles
-to nothing if the upstream component it patches over isn't in the build.
+Holds narrow fixes that don't belong inside any one linux_* component:
+missing symbol definitions, header-only workarounds, etc. Each .cpp guards
+itself with USE_HOST and __has_include, so it compiles to nothing unless the
+component it patches over is in the build.
 
-Opt-in only: users add `linux_compat:` to their YAML when they hit a build
-that needs the shims (e.g. MCP23xxx GPIO expanders on host). Not auto-loaded
-because most setups don't need it and it shouldn't sit in the compile path
-of users who don't use the patched-around components.
+Opt-in: add `linux_compat:` to YAML when a build needs the shims (e.g.
+MCP23xxx GPIO expanders on host). Not auto-loaded, so it stays out of the
+compile path for setups that don't need it.
 """
 
 import esphome.config_validation as cv

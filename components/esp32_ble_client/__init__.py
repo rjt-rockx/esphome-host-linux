@@ -1,8 +1,8 @@
-"""Shadow esp32_ble_client for the host platform.
+"""esp32_ble_client for the host platform.
 
 Native BlueZ GATT client: BLEClientBase implements connect/discover/read/write/
-notify directly on org.bluez via BLEGattHost — no ESP-IDF coupling. Drops the
-esp32 dependency; links libsystemd (sd-bus) + pthread on host.
+notify directly on org.bluez via BLEGattHost. Links libsystemd (sd-bus) +
+pthread on host.
 """
 
 from __future__ import annotations

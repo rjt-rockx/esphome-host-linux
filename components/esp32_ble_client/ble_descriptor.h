@@ -11,7 +11,7 @@ namespace espbt = esphome::esp32_ble_tracker;
 
 class BLECharacteristic;
 
-// Mirrors upstream's BLEDescriptor field shape (uuid, handle, characteristic).
+// A discovered GATT descriptor.
 class BLEDescriptor {
  public:
   espbt::ESPBTUUID uuid;

@@ -87,7 +87,7 @@ float BLESensor::parse_data_(const uint8_t *value, uint16_t value_len) {
     std::vector<uint8_t> data(value, value + value_len);
     return this->data_to_value_func_(data);
   }
-  // Default: first byte (matches upstream's accuracy_decimals=0 simple case).
+  // Default: the first byte as a float (or NAN if empty).
   return value_len > 0 ? static_cast<float>(value[0]) : NAN;
 }
 

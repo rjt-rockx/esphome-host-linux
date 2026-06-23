@@ -45,8 +45,8 @@ BLECharacteristic *BLEService::create_characteristic(ESPBTUUID uuid, uint32_t pr
 }
 
 void BLEService::do_create(BLEServer *server) {
-  // No IDF create handshake on host: cascade-create the characteristics (which
-  // cascade to descriptors) so the whole tree is ready for one RegisterApplication.
+  // Cascade-create the characteristics (which cascade to descriptors) so the whole
+  // tree is ready for one RegisterApplication.
   this->server_ = server;
   for (auto *characteristic : this->characteristics_) {
     characteristic->do_create(this);
@@ -55,9 +55,9 @@ void BLEService::do_create(BLEServer *server) {
 }
 
 void BLEService::start() {
-  // No IDF start handshake; the service is "running" once the application is
-  // registered. Add the advertised UUID to the parent ESP32BLE so BlueZ includes
-  // it in the LEAdvertisement1 ServiceUUIDs (advertise: true in YAML).
+  // The service is "running" once the application is registered. Add the advertised
+  // UUID to the parent ESP32BLE so BlueZ includes it in the LEAdvertisement1
+  // ServiceUUIDs (advertise: true in YAML).
   this->state_ = RUNNING;
   if (this->advertise_ && this->server_ != nullptr && this->server_->get_parent() != nullptr) {
     this->server_->get_parent()->advertising_add_service_uuid(this->uuid_);

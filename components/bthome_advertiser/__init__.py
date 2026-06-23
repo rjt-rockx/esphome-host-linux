@@ -1,14 +1,11 @@
 """Host (Linux/BlueZ) BTHome v2 advertiser.
 
 Broadcasts a BTHome v2 Service Data AD (UUID 0xFCD2) via its own org.bluez
-LEAdvertisement1 on the shared esp32_ble worker — the same advertising path as
-esp32_ble_beacon, but emitting ServiceData instead of ManufacturerData. There is
-no upstream ESPHome "advertise BTHome" component, so this is host-only: the Linux
-box publishes its own readings as BTHome for Home Assistant / other receivers (and
-is a controllable BTHome source for the test suite).
+LEAdvertisement1 on the shared esp32_ble worker: the Linux box publishes its own
+readings as BTHome for Home Assistant / other receivers.
 
-Static measurements only for now (built once at setup); live sensor binding and
-encryption (bindkey/AES-CCM) are intentionally deferred.
+Measurements are static, built once at setup. Live sensor binding and encryption
+(bindkey/AES-CCM) are not supported.
 """
 
 import esphome.codegen as cg
@@ -26,7 +23,7 @@ BTHomeAdvertiser = bthome_advertiser_ns.class_("BTHomeAdvertiser", cg.Component)
 CONF_MEASUREMENTS = "measurements"
 
 # Supported BTHome v2 measurement type name -> object id. Sizes/scales/signedness
-# live in the C++ encoder (bthome_encoder.cpp) and mirror the receive parser.
+# live in the C++ encoder (bthome_encoder.cpp).
 BTHOME_OBJECTS = {
     "packet_id": 0x00,
     "battery": 0x01,

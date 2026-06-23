@@ -1,4 +1,4 @@
-# Phase 3 smoke test: MAX31865 RTD-to-digital via Linux spidev.
+# MAX31865 RTD-to-digital via Linux spidev.
 #
 # Wiring (BCM numbering):
 #   - SCLK: GPIO11 (SPI0 SCLK, header pin 23)
@@ -12,9 +12,8 @@
 #   - User must be in 'spi' group (the bootstrap script handles this).
 #   - Verify /dev/spidev0.0 exists after reboot.
 #
-# Notes:
-#   - cs_pin is required by ESPHome's spi_device schema but is ignored on host:
-#     the kernel asserts CE0 for /dev/spidev0.0. We pass a placeholder.
+# cs_pin is required by ESPHome's spi_device schema but ignored on host; the
+# kernel asserts CE0 for /dev/spidev0.0, so any value works as a placeholder.
 
 esphome:
   name: pi-spi-test

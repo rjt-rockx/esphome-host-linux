@@ -136,12 +136,12 @@ bool BLEGattServer::open_bus_() {
 
 void BLEGattServer::start(const std::vector<BLEService *> &services) {
   // Build the object tree on the main thread (pure data: our own structs + the
-  // characteristic back-pointers used by notify_characteristic). The actual bus
-  // export + RegisterApplication happen on the worker (see do_start_).
+  // characteristic back-pointers used by notify_characteristic). The bus export +
+  // RegisterApplication happen on the worker (see do_start_).
   this->build_tree_(services);
 
-  // Attach to the shared worker so worker_process_commands() runs, then post a
-  // START so do_start_() executes on the worker thread.
+  // Attach to the shared worker so worker_process_commands() runs, then request a
+  // start so do_start_() executes on the worker thread.
   BleWorker::instance().attach_worker_client(this);
   this->attached_ = true;
   {
@@ -729,8 +729,8 @@ int BLEGattServer::on_register_adv_reply_(sd_bus_message *reply, void *userdata,
   if (err != nullptr && sd_bus_error_is_set(err)) {
     ESP_LOGW(TAG, "RegisterAdvertisement failed: %s", err->message ? err->message : err->name);
     self->adv_registered_ = false;
-    // bluez#644: re-register can fail with "Invalid Parameters"/"Failed" until the
-    // adapter is bounced. Power-cycle once, then retry; don't loop forever.
+    // Re-register can fail with "Invalid Parameters"/"Failed" until the adapter is
+    // bounced (bluez#644). Power-cycle once, then retry; don't loop forever.
     if (!self->readv_power_cycled_) {
       self->readv_power_cycled_ = true;
       self->power_cycle_adapter_();
@@ -919,8 +919,8 @@ int BLEGattServer::on_device_props_changed_(sd_bus_message *m, void *ud, sd_bus_
   uint16_t conn_id = self->intern_device_(path);
   self->post_event_({connected ? ServerEvent::Kind::CONNECT : ServerEvent::Kind::DISCONNECT, conn_id});
   // A central just dropped — the controller stopped our connectable advertising and
-  // the kernel's ext-adv auto-resume is unreliable on this radio (bluez#644). Force
-  // a fresh advertising set so the central (or another) can reconnect.
+  // ext-adv auto-resume is unreliable (bluez#644). Force a fresh advertising set so
+  // a central can reconnect.
   if (!connected)
     self->schedule_readvertise_();
   return 0;

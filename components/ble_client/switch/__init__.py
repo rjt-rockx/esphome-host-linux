@@ -1,4 +1,4 @@
-"""Shadow ble_client/switch — enable/disable the BLE client connection."""
+"""ble_client/switch — enable/disable the BLE client connection."""
 
 from __future__ import annotations
 

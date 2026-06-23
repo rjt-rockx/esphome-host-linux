@@ -11,7 +11,7 @@ namespace bthome_advertiser {
 
 static const char *const TAG = "bthome_advertiser";
 
-// All three host advertisers register against the default adapter.
+// Default BlueZ adapter this advertiser registers against.
 static constexpr const char *ADAPTER_PATH = "/org/bluez/hci0";
 
 static const sd_bus_vtable ADV_VTABLE[] = {
@@ -28,8 +28,8 @@ BTHomeAdvertiser::~BTHomeAdvertiser() {
     esp32_ble::BleWorker::instance().detach_worker_client(this);
     this->attached_ = false;
   }
-  // Best-effort cleanup (mirrors the GATT server) so we don't leak an advertising
-  // instance into BlueZ across process restarts (RUN-LOG #644/stale-instance).
+  // Best-effort cleanup so we don't leak an advertising instance into BlueZ
+  // across process restarts.
   this->unregister_advertisement_();
   if (this->adv_slot_ != nullptr)
     sd_bus_slot_unref(this->adv_slot_);

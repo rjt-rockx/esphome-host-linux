@@ -14,8 +14,8 @@ namespace espbt = esphome::esp32_ble_tracker;
 using esp32_ble_client::BLEReadResult;
 using esp32_ble_client::BLENotifyEvent;
 
-// Native-host port of BLETextSensor: read/notify a characteristic and publish
-// its value as a hex string (matching upstream's default behavior).
+// Text sensor backed by a GATT characteristic: read/notify and publish the
+// value as a lowercase hex string.
 class BLETextSensor : public text_sensor::TextSensor, public PollingComponent, public BLEClientNode {
  public:
   void update() override;

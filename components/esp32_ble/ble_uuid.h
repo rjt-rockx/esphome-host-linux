@@ -1,8 +1,7 @@
 #pragma once
 
-// Host stand-in for esphome/components/esp32_ble/ble_uuid.h. Provides just
-// enough of the ESPBTUUID API for ble_presence, ble_rssi, and other consumers
-// of esp32_ble_tracker to compile and operate on Linux.
+// ESPBTUUID: a Bluetooth UUID that may be 16-, 32-, or 128-bit, stored LSB-first.
+// Provides the conversion/comparison surface that esp32_ble_tracker consumers use.
 
 #include <cstdint>
 #include <cstdio>
@@ -14,8 +13,8 @@
 namespace esphome {
 namespace esp32_ble {
 
-// Minimal stand-in for ESP-IDF's esp_bt_uuid_t, so consumers (e.g. thermopro_ble)
-// that call ESPBTUUID::get_uuid() and read uuid.uuid.uuid16 compile on host.
+// Tagged-union UUID matching the layout consumers read via ESPBTUUID::get_uuid()
+// (e.g. uuid.uuid.uuid16). len selects which union member is valid.
 constexpr uint16_t ESP_UUID_LEN_16 = 2;
 constexpr uint16_t ESP_UUID_LEN_32 = 4;
 constexpr uint16_t ESP_UUID_LEN_128 = 16;
@@ -62,21 +61,16 @@ class ESPBTUUID {
       u.raw_[i] = data[15 - i];
     return u;
   }
-  // Explicit "N already-binary bytes" form (raw memcpy). Kept for completeness;
-  // nothing in-tree currently calls it (binary callers use from_raw(const uint8_t*)).
+  // Build from up to 16 already-binary bytes (raw memcpy, no parsing).
   static ESPBTUUID from_raw(const char *data, size_t length);
-  // Parse a canonical UUID string as BlueZ reports it, e.g.
-  // "0000fdf7-0000-1000-8000-00805f9b34fb" (always 128-bit form). Stored
-  // reversed (LSB-first), matching from_raw_reversed / the as_reversed_hex_array
-  // codegen path so service-UUID comparisons line up.
+  // Parse a canonical UUID string, e.g. "0000fdf7-0000-1000-8000-00805f9b34fb"
+  // (always 128-bit form). Stored reversed (LSB-first), matching from_raw_reversed
+  // so service-UUID comparisons line up.
   static ESPBTUUID from_uuid_str(const char *s);
   static ESPBTUUID from_uuid_str(const std::string &s) { return from_uuid_str(s.c_str()); }
-  // Upstream ESPBTUUID::from_raw(std::string)/(const char*) PARSE a hex UUID
-  // string (this is the esp32_ble_server parse_uuid() codegen path and
-  // BLEService::create_characteristic(std::string)). The shim's earlier raw-memcpy
-  // behavior exported custom 128-bit UUIDs as their ASCII bytes — centrals then
-  // never matched the characteristic. Delegate to from_uuid_str so the hex is
-  // parsed, keeping the codegen byte-identical to upstream.
+  // from_raw(string/const char*) PARSES a hex UUID string (the parse_uuid /
+  // create_characteristic(std::string) codegen path); it does not memcpy the
+  // ASCII bytes. Parsing is required so 128-bit UUIDs match on centrals.
   static ESPBTUUID from_raw(const char *data) { return from_uuid_str(data); }
   static ESPBTUUID from_raw(const std::string &s) { return from_uuid_str(s.c_str()); }
   // Build from the esp_bt_uuid_t union form (GATT server / advertising codegen).
@@ -94,8 +88,8 @@ class ESPBTUUID {
     return u;
   }
 
-  // Build an esp_bt_uuid_t view (used by parsers like thermopro_ble that read
-  // .uuid.uuid16). raw_ is stored LSB-first, matching the union's native order.
+  // Build an esp_bt_uuid_t view for parsers that read .uuid.uuid16 etc. raw_ is
+  // stored LSB-first, matching the union's native order.
   esp_bt_uuid_t get_uuid() const {
     esp_bt_uuid_t u{};
     u.len = this->len_;
@@ -152,9 +146,8 @@ class ESPBTUUID {
   }
   const uint8_t *raw() const { return this->raw_; }
 
-  // Returns true if the byte pair (data1, data2) appears contiguously in the
-  // UUID, little-endian. Mirrors upstream ESPBTUUID::contains, used by service-
-  // data parsers (atc/pvvx/ruuvi) to match e.g. 0x181A regardless of length.
+  // True if the byte pair (data1, data2) appears contiguously in the UUID,
+  // little-endian. Lets service-data parsers match e.g. 0x181A regardless of length.
   bool contains(uint8_t data1, uint8_t data2) const {
     if (this->len_ == 2) {
       return this->raw_[0] == data1 && this->raw_[1] == data2;

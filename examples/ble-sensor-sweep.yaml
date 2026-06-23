@@ -1,6 +1,6 @@
-# Full parsed *_ble consumer sweep on the host (D-Bus) backend. Compile-verifies
-# the shadow tracker's API surface is sufficient for the whole sensor family.
-# Parity needs the physical peripheral per device; MACs/bindkeys are placeholders.
+# Sweep of parsed *_ble sensor platforms on the host (D-Bus) backend. Each
+# device needs its physical peripheral to report; the MACs/bindkeys below are
+# placeholders, so set them to your own hardware.
 esphome:
   name: ble-sweep
   platformio_options:

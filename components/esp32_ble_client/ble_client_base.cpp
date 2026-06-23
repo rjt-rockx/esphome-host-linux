@@ -18,7 +18,7 @@ namespace esp32_ble_client {
 static const char *const TAG = "ble_client_base";
 
 BLEClientBase::BLEClientBase() = default;
-BLEClientBase::~BLEClientBase() = default;  // BLEGattHost complete here
+BLEClientBase::~BLEClientBase() = default;  // defined here where BLEGattHost is a complete type
 
 float BLEClientBase::get_setup_priority() const { return setup_priority::AFTER_BLUETOOTH; }
 
@@ -42,7 +42,6 @@ bool BLEClientBase::parse_device(const espbt::ESPBTDevice &device) {
     return false;
   if (device.address_uint64() != this->address_)
     return false;
-  // Found our device while scanning.
   if (this->state() == espbt::ClientState::IDLE && this->auto_connect_) {
     this->set_state(espbt::ClientState::DISCOVERED);
   }
@@ -151,7 +150,7 @@ void BLEClientBase::dispatch_event_(const HostGattEvent &ev) {
       }
       ESP_LOGI(TAG, "[%s] Connected", this->address_str_);
       this->set_state(espbt::ClientState::CONNECTED);
-      // Step 1: no discovery yet — service discovery + ESTABLISHED arrive in Step 2.
+      // Service discovery and ESTABLISHED follow on SERVICES_DISCOVERED.
       break;
     case HostGattEvent::Kind::SERVICES_DISCOVERED: {
       this->mtu_ = ev.mtu;
@@ -277,7 +276,7 @@ BLEDescriptor *BLEClientBase::get_config_descriptor(uint16_t handle) {
 float BLEClientBase::parse_char_value(uint8_t *value, uint16_t length) {
   if (length == 0)
     return 0.0f;
-  // Mirror upstream's GATT presentation-format-ish parse for simple types.
+  // Decode simple little-endian integer values (1/2/4 bytes) to float.
   if (length == 1)
     return static_cast<float>(value[0]);
   if (length == 2)

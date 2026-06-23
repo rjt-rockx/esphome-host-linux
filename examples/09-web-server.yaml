@@ -1,6 +1,5 @@
-# Upstream web_server:, unmodified, running on host.
-# Our shadow web_server_base external component provides an
-# AsyncWebServer shim implemented on POSIX sockets so this works.
+# Upstream web_server: on host. The web_server_base external component shims
+# AsyncWebServer over POSIX sockets so the stock component runs unmodified.
 
 esphome:
   name: pi-web-test

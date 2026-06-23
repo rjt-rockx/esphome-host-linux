@@ -69,11 +69,10 @@ void BluetoothProxy::handle_gatt_not_connected_(uint64_t address, uint16_t handl
   this->send_gatt_error(address, handle, ESP_GATT_NOT_CONNECTED);
 }
 
-// Host path: BlueZ delivers PARSED advertisements (parse_device), not the raw
-// PDU. We re-serialize the parsed fields into a standard AD payload and forward
-// it to HA as a raw advertisement. HA's parsers consume the manufacturer/service
-// data fields, which is what nearly all consumers need. (Byte-exact raw bytes
-// require the raw-HCI opt-in — see CHARTER item T / D5.)
+// BlueZ delivers PARSED advertisements, not the raw PDU. Re-serialize the parsed
+// fields into a standard AD payload and forward it to HA as a raw advertisement;
+// HA's parsers consume the manufacturer/service data fields, which is what nearly
+// all consumers need. Byte-exact raw bytes would require a raw-HCI path.
 bool BluetoothProxy::parse_device(const esp32_ble_tracker::ESPBTDevice &device) {
   if (!api::global_api_server->is_connected() || this->api_connection_ == nullptr)
     return false;

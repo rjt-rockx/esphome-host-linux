@@ -1,4 +1,4 @@
-# Step 5: RSSI sensor + web_server for live observation.
+# RSSI sensor sourced from a connected ble_client.
 esphome:
   name: ble-client-rssi
   platformio_options:

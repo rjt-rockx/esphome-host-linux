@@ -196,8 +196,7 @@ void parse_ad_payload(const uint8_t *payload, uint8_t len, ESPBTDevice &device) 
 }  // namespace
 
 optional<ESPBLEiBeacon> ESPBLEiBeacon::from_manufacturer_data(const ServiceData &data) {
-  // Manufacturer data layout in advertisement: <2-byte company ID LE><payload>.
-  // We packed it as: data[0..1] = company, data[2..] = payload.
+  // Manufacturer data layout: data[0..1] = company ID (LE), data[2..] = payload.
   if (data.data.size() < 2 + sizeof(ESPBLEiBeacon::beacon_data_))
     return {};
   // Apple = 0x004c, iBeacon sub-type = 0x02 length 0x15.
@@ -325,8 +324,7 @@ void ESP32BLETracker::loop() {
 void ESP32BLETracker::try_promote_discovered_clients_() {
   for (auto *client : this->clients_) {
     if (client->state() == ClientState::DISCOVERED) {
-      // On the D-Bus backend BlueZ connects while discovery is active, so we do
-      // not stop the scan here (unlike the ESP32 single-radio controller).
+      // BlueZ connects while discovery is active, so the scan is not stopped here.
       client->connect();
     }
   }
@@ -522,15 +520,14 @@ void ESP32BLETracker::scanner_thread_main_() {
 // ---------------------------------------------------------------------------
 // BlueZ D-Bus backend (default).
 //
-// Unlike the raw-HCI backend, this talks to bluetoothd over the system bus, so
-// it coexists with anything else using the adapter (e.g. Home Assistant). We
-// ask bluetoothd to discover, then read the *parsed* org.bluez.Device1
-// properties (Address/RSSI/Name/UUIDs/ServiceData/ManufacturerData) and feed
-// them into the same ESPBTDevice/deliver_device_() path the listeners consume.
+// Talks to bluetoothd over the system bus, so it coexists with anything else
+// using the adapter. It asks bluetoothd to discover, then reads the *parsed*
+// org.bluez.Device1 properties (Address/RSSI/Name/UUIDs/ServiceData/
+// ManufacturerData) and feeds them into the same deliver_device_() path the
+// listeners consume.
 //
 // BlueZ does NOT expose the raw advertising PDU here (only decoded fields); for
-// byte-exact raw advertisements use the hci_backend opt-in. See
-// references/ble-host/findings.md §5.
+// byte-exact raw advertisements use the hci_backend opt-in.
 // ---------------------------------------------------------------------------
 
 namespace {

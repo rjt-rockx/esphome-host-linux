@@ -1,17 +1,10 @@
-# Step-10 COEXISTENCE: one host binary running, simultaneously, every BLE role on
-# the Linux/BlueZ backend:
-#   - a GATT SERVER  (esp32_ble_server)  -> shared esp32_ble::BleWorker loop
-#   - an iBeacon     (esp32_ble_beacon)  -> shared esp32_ble::BleWorker loop
-#   - a GATT CLIENT  (ble_client)        -> separate esp32_ble_client::BLEGattHostThread loop
-# Proves the two worker threads (BleWorker + BLEGattHostThread) coexist in one
-# process against one bluetoothd: the server serves + the beacon advertises while
-# the client scans, connects, reads and subscribes to a peripheral (the C6 GATT
-# server, fixtures/c6-gatt-server.yaml). All three share hci0 (BlueZ multiplexes
-# advertising + scanning + connections).
-#
-# No credentials committed. The C6 MAC below is documented test hardware (same as
-# the other ble-client-*.yaml examples). Drive/observe over the native API +
-# btmon/busctl, not serial.
+# Coexistence: one host binary running every BLE role at once on the Linux/BlueZ
+# backend:
+#   - a GATT server (esp32_ble_server)
+#   - an iBeacon advertiser (esp32_ble_beacon)
+#   - a GATT client (ble_client) connecting to a peripheral
+# All three share hci0; BlueZ multiplexes advertising, scanning, and connections.
+# Drive/observe over the native API + btmon/busctl, not serial.
 esphome:
   name: ble-coexist
 
@@ -28,7 +21,7 @@ external_components:
       type: local
       path: ../components
 
-# --- Role 1: GATT server (BleWorker) ---
+# --- Role 1: GATT server ---
 esp32_ble_server:
   manufacturer: ESPHome
   model: Host BLE Coexist
@@ -46,14 +39,14 @@ esp32_ble_server:
           read: true
           value: "coexist"
 
-# --- Role 2: iBeacon advertiser (BleWorker) ---
+# --- Role 2: iBeacon advertiser ---
 esp32_ble_beacon:
   type: iBeacon
   uuid: a1b2c3d4-0000-1000-8000-00805f9b34fb
   major: 100
   minor: 200
 
-# --- Role 3: GATT client -> C6 GATT server (BLEGattHostThread) ---
+# --- Role 3: GATT client -> peripheral ---
 esp32_ble_tracker:
 
 ble_client:

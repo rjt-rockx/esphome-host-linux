@@ -13,9 +13,9 @@
 #include <string>
 #include <utility>
 
-// libmosquitto opaque handles. Declared at global namespace so the static
-// callback signatures match the C library's exact prototypes (otherwise the
-// compiler treats `struct mosquitto_message` as `esphome::mqtt::mosquitto_message`).
+// libmosquitto opaque handles, declared at global namespace so the static
+// callback signatures match the C library's prototypes (a forward declaration
+// inside esphome::mqtt would name a different, namespaced type).
 struct mosquitto;
 struct mosquitto_message;
 
@@ -71,9 +71,8 @@ class MQTTBackendHost final : public MQTTBackend {
   bool unsubscribe(const char *topic) override;
   bool publish(const char *topic, const char *payload, size_t length, uint8_t qos, bool retain) override;
 
-  // No-op TLS hooks. libmosquitto supports TLS via mosquitto_tls_set; left
-  // unimplemented for now since the most common Pi MQTT deployments use a
-  // local broker on localhost or a LAN broker without TLS.
+  // TLS hooks: accepted and stored but not wired into libmosquitto. Host MQTT
+  // deployments typically use a local or LAN broker without TLS.
   void set_ca_certificate(const char *cert) {
     if (cert)
       this->ca_certificate_ = cert;

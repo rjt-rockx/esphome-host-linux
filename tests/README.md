@@ -39,8 +39,8 @@ its own binary and runs; the tier fails if any check fails.
 tests/unit/run.sh
 ```
 
-- `test_ble_uuid.cpp` — `ESPBTUUID` parse/format/compare; pins the custom-128-bit
-  UUID-export regression (UUIDs were once exported as ASCII bytes).
+- `test_ble_uuid.cpp` — `ESPBTUUID` parse/format/compare; pins that custom 128-bit
+  UUIDs are hex-parsed and exported as bytes, not ASCII.
 - `test_bthome_encoder.cpp` — BTHome v2 service-data payload bytes. Golden:
   temp 25.06 / humidity 50.55 / battery 93 → `40 01 5D 02 CA 09 03 BF 13`
   (device-info byte, objects sorted ascending, little-endian scaled values),

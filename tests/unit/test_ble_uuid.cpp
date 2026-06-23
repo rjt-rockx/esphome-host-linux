@@ -5,13 +5,12 @@
 // the GATT server, GATT client, scanner and beacon all depend on for
 // service/characteristic matching.
 //
-// In particular they pin the regression behind commit b715122: the host shim's
-// from_raw(const char *) / from_raw(std::string) used to memcpy the *ASCII* of a
-// canonical UUID string instead of hex-parsing it, so a custom 128-bit
-// characteristic UUID was exported to BlueZ as the bytes "a1b2..." and no central
-// ever matched it. See test_regression_from_raw_string_parses_hex below.
+// They also pin the from_raw(const char*)/from_raw(std::string) contract:
+// a canonical UUID string must be HEX-PARSED, not memcpy'd as ASCII, or a custom
+// 128-bit characteristic UUID is exported to BlueZ as wrong bytes and no central
+// matches it. See test_regression_from_raw_string_parses_hex below.
 //
-// Build + run: tests/unit/run.sh  (or see that script for the exact g++ line).
+// Build + run: tests/unit/run.sh
 
 #include "ble_uuid.h"
 
@@ -91,9 +90,8 @@ static void test_lsb_first_storage() {
 }
 
 static void test_regression_from_raw_string_parses_hex() {
-  // THE bug fix: from_raw(const char *) and from_raw(std::string) must HEX-PARSE
-  // a canonical UUID string, not memcpy its ASCII. The old buggy behavior left
-  // raw()[0] == 'a' (0x61) and length() == 16 (min(strlen,16)).
+  // from_raw(const char *) and from_raw(std::string) must HEX-PARSE a canonical
+  // UUID string, not memcpy its ASCII (which would leave raw()[0] == 'a').
   const char *s = "a1b2c3d4-0001-1000-8000-00805f9b34fb";
 
   ESPBTUUID from_cstr = ESPBTUUID::from_raw(s);

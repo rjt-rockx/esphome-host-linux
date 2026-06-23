@@ -1,7 +1,6 @@
-# Minimal passive-scan gateway: presence + RSSI for one device, on the host
-# BlueZ D-Bus backend. Used by the integration scanner test (an injected advert
-# at the target MAC must drive ble_rssi/ble_presence). VERBOSE so the decoded
-# RSSI value is logged ("'<name>' >> <rssi>"); scanner lowered to DEBUG to cut noise.
+# Minimal scan gateway: presence + RSSI for one device, on the host BlueZ D-Bus
+# backend. VERBOSE so the decoded RSSI value is logged ("'<name>' >> <rssi>");
+# the scanner is lowered to DEBUG to cut noise.
 esphome:
   name: ble-scanner
 

@@ -1,8 +1,4 @@
-"""Shadow ble_client/sensor (characteristic read/notify). Native host port.
-
-Handles the `characteristic` sensor type. The `rssi` type is added in the RSSI
-build step. Ported to the native BLEClientNode hooks (no IDF event handler).
-"""
+"""ble_client/sensor — `characteristic` (read/notify) and `rssi` sensor types."""
 
 from __future__ import annotations
 

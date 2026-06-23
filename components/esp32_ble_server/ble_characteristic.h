@@ -7,9 +7,8 @@
 #if defined(USE_ESP32) || defined(USE_HOST)
 #ifdef USE_HOST
 
-// Host shadow of esp32_ble_server's BLECharacteristic. Owns value + properties +
-// descriptors + on_read/on_write callbacks; the property bitmask uses the same
-// PROPERTY_* constants as upstream so codegen's parse_properties() is unchanged.
+// Host BLECharacteristic. Owns value + properties + descriptors + on_read/
+// on_write callbacks; the property bitmask uses the PROPERTY_* constants below.
 // BLEGattServer exports each as an org.bluez GattCharacteristic1 and routes
 // ReadValue/WriteValue/StartNotify/StopNotify here. notify() emits a Value
 // PropertiesChanged via the server (BlueZ filters to subscribed clients).

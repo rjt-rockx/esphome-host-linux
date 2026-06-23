@@ -4,8 +4,7 @@
 #   - restart switch: terminate the process (relies on systemd auto-restart)
 #   - copy: mirror an existing entity as a new one
 #
-# Useful for verifying that ESPHome's time:, switch:, and entity-mirror
-# plumbing all work end-to-end on host.
+# Exercises ESPHome's time:, switch:, and entity-mirror plumbing on host.
 
 esphome:
   name: pi-time-test

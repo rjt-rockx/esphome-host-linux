@@ -3,14 +3,9 @@
 
 // BleWorker — the shared sd-event worker thread for all host BLE D-Bus work.
 // One thread, one sd_event loop, services every attached BusWorkerClient's bus.
-// Both the GATT client (esp32_ble_client::BLEGattHost) and the GATT server
-// (esp32_ble_server::BLEGattServer) attach their own sd_bus to event() and
-// register as BusWorkerClients so their command queues are drained once per loop
-// pass. Created lazily on first use; the singleton outlives all clients.
-//
-// Lives in esp32_ble (the BLE base both components already auto-load) so the
-// server does not have to depend on the whole GATT *client* component just to
-// share the loop.
+// Clients (the GATT client and GATT server) attach their own sd_bus to event()
+// and register as BusWorkerClients so their command queues are drained once per
+// loop pass. Created lazily on first use; the singleton outlives all clients.
 
 #include <atomic>
 #include <mutex>

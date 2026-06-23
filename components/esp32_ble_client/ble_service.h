@@ -14,9 +14,8 @@ namespace espbt = esphome::esp32_ble_tracker;
 
 class BLEClientBase;
 
-// Host BLEService — same public shape as upstream. The characteristic tree is
-// built eagerly by the worker after ServicesResolved, so parse_characteristics
-// is a no-op.
+// A discovered GATT service. Its characteristic tree is built eagerly at
+// discovery (after ServicesResolved), so parse_characteristics is a no-op.
 class BLEService {
  public:
   bool parsed = false;
@@ -28,7 +27,7 @@ class BLEService {
 
   ~BLEService();
 
-  void parse_characteristics() {}  // tree built eagerly by the worker; no-op
+  void parse_characteristics() {}  // no-op: tree is built eagerly at discovery
   void release_characteristics();
   BLECharacteristic *get_characteristic(espbt::ESPBTUUID uuid);
   BLECharacteristic *get_characteristic(uint16_t uuid);

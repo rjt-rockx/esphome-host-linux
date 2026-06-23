@@ -1,13 +1,9 @@
-"""Host (Linux/BlueZ) shadow of esp32_ble_beacon.
+"""Host (Linux/BlueZ) esp32_ble_beacon.
 
 Advertises an Apple-iBeacon via org.bluez LEAdvertisement1 (Type="broadcast",
-ManufacturerData company 0x004C) on the shared esp32_ble worker, instead of the
-ESP-IDF esp_ble_gap_config_adv_data_raw path. Codegen mirrors upstream's setters
-so a stock ``esp32_ble_beacon:`` block compiles unchanged on host. Host transforms:
-DEPENDENCIES drops "esp32"; no add_idf_sdkconfig_option / gap-handler registration
-(BlueZ owns the radio). ``min_interval`` / ``max_interval`` / ``tx_power`` are
-accepted for config parity but are adapter-global on Linux, so they are
-informational (logged in dump_config) — the kernel/BlueZ control them.
+ManufacturerData company 0x004C) on the shared esp32_ble worker. ``min_interval`` /
+``max_interval`` / ``tx_power`` are accepted but are adapter-global on Linux, so
+they are informational only (logged in dump_config); the kernel/BlueZ control them.
 """
 
 import esphome.codegen as cg
@@ -60,7 +56,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_MEASURED_POWER, default=-59): cv.int_range(
                 min=-128, max=0
             ),
-            # Accepted for parity; BlueZ controls adapter TX power on Linux.
+            # BlueZ controls adapter TX power on Linux; accepted but ignored.
             cv.Optional(CONF_TX_POWER, default="3dBm"): cv.decibel,
         }
     ).extend(cv.COMPONENT_SCHEMA),

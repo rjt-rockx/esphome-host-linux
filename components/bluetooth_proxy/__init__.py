@@ -1,8 +1,7 @@
-"""Shadow bluetooth_proxy for the host platform (native BlueZ).
+"""bluetooth_proxy for the host platform (native BlueZ).
 
-Host as a Home Assistant Bluetooth proxy: forwards parsed advertisements (re-
-serialized — see CHARTER item T) and proxies active GATT connections over the
-ESPHome native API. Drops the esp32 dependency + the IDF logger/sdkconfig knobs.
+Host as a Home Assistant Bluetooth proxy: forwards parsed advertisements
+(re-serialized) and proxies active GATT connections over the ESPHome native API.
 """
 
 from __future__ import annotations

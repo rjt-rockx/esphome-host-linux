@@ -2,8 +2,7 @@
 #if defined(USE_ESP32) || defined(USE_HOST)
 
 // Portable event/result structs marshalled from the BLEGattHost sd-bus worker
-// thread to the ESPHome main thread. No ESP-IDF types — the host GATT client is
-// native BlueZ, not an emulation of the IDF event model.
+// thread to the ESPHome main thread. No ESP-IDF types.
 
 #include <cstdint>
 #include <memory>
@@ -42,8 +41,7 @@ struct DiscoveredService {
 };
 
 // Short-lived views handed to node hooks; valid only for the duration of the
-// hook call (they point into the owning HostGattEvent::data), mirroring the
-// lifetime of ESP-IDF's param->read.value / param->notify.value.
+// hook call (they point into the owning HostGattEvent::data).
 struct BLEReadResult {
   uint16_t handle;
   int status;  // esp_gatt_status_t value

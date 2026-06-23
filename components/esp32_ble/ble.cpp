@@ -11,7 +11,7 @@ static const char *const TAG = "esp32_ble";
 
 void ESP32BLE::advertising_start() {
   this->adv_.active = true;
-  // Fire raw-advertisement callbacks (the beacon uses this to build its payload).
+  // Let raw-advertisement subscribers (e.g. the beacon) assemble their payload.
   for (auto &cb : this->raw_adv_callbacks_)
     cb(true);
   this->push_advertising_();

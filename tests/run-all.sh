@@ -50,7 +50,7 @@ run_integration() {
   # sd-bus in the host binary must reach the PRIVATE bus the harness spins up, not
   # whatever DBUS_SYSTEM_BUS_ADDRESS the caller's shell may already export.
   unset DBUS_SYSTEM_BUS_ADDRESS
-  # The harness imports dbusmock/dbus/gi and drives pytest under the system python3.
+  # The harness imports dbusmock/dbus/gi and runs pytest under the system python3.
   if ! python3 -c 'import dbusmock, dbus, gi, pytest' >/dev/null 2>&1; then
     echo "SKIP integration: needs python3-dbusmock python3-dbus python3-gi python3-pytest"
     skipped+=("integration"); return

@@ -1,4 +1,4 @@
-# Phase 5b smoke test: DS18B20 via Linux kernel w1-gpio (no bit-banging).
+# DS18B20 via the Linux kernel w1-gpio driver.
 #
 # Wiring:
 #   - DS18B20 data: GPIO4 (header pin 7) with 4.7k pullup to 3.3V

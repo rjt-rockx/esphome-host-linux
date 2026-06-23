@@ -1,14 +1,12 @@
 #pragma once
 #ifdef USE_HOST
 
-// Portable server-side events marshalled from the BLEGattServer sd-bus worker
-// thread to the ESPHome main thread. The BlueZ GATT server exports an object
-// tree (GattService1/GattCharacteristic1/GattDescriptor1) and registers it via
-// GattManager1.RegisterApplication; BlueZ invokes our vtable handlers on the
-// worker thread. Those handlers update the value store under a lock (so reads
-// can be answered synchronously) and post these events to the main thread,
-// where BLEServer routes them to the owning characteristic's callbacks and the
-// server connect/disconnect callbacks. No ESP-IDF types — native BlueZ.
+// Server-side events marshalled from the BLEGattServer sd-bus worker thread to the
+// ESPHome main thread. BlueZ invokes the vtable handlers on the worker thread;
+// those handlers update the value store under a lock (so reads can be answered
+// synchronously) and post these events to the main thread, where BLEServer routes
+// them to the owning characteristic's callbacks and the server connect/disconnect
+// callbacks.
 
 #include <cstdint>
 #include <memory>
@@ -37,8 +35,8 @@ struct HostGattServerEvent {
   uint16_t handle{0};
   bool is_desc{false};  // WRITE/READ target is a descriptor (vs characteristic)
 
-  // A synthetic, stable per-connection id minted from the BlueZ device path
-  // (mirrors esp_ble_gatts conn_id). 0 = unknown/not connection-scoped.
+  // A synthetic, stable per-connection id minted from the BlueZ device path.
+  // 0 = unknown/not connection-scoped.
   uint16_t conn_id{0};
 
   // Payload for WRITE (owned copy taken off the sd_bus_message on the worker).

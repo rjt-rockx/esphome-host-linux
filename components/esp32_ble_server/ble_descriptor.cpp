@@ -19,9 +19,6 @@ BLEDescriptor::~BLEDescriptor() = default;
 
 void BLEDescriptor::do_create(BLECharacteristic *characteristic) {
   this->characteristic_ = characteristic;
-  // On host there is no IDF add-descriptor handshake; the descriptor is created
-  // immediately and exported as part of the one RegisterApplication. BlueZ owns
-  // the 0x2902 CCCD, so BLEGattServer never exports a 0x2902 GattDescriptor1.
   this->state_ = CREATED;
 }
 

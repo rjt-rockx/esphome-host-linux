@@ -12,10 +12,10 @@
 #if defined(USE_ESP32) || defined(USE_HOST)
 #ifdef USE_HOST
 
-// Host shadow of esp32_ble_server's automations. Pure ESPHome glue (no IDF, no
-// D-Bus): ported verbatim from upstream — triggers wire to on_write/on_connect/
-// on_disconnect, the set-value action manages a per-characteristic read listener,
-// and notify fires the pre-notify listener then notify(). Guarded USE_HOST.
+// esp32_ble_server automations. Pure ESPHome glue (no D-Bus): triggers wire to
+// on_write/on_connect/on_disconnect, the set-value action manages a
+// per-characteristic read listener, and notify fires the pre-notify listener then
+// notify().
 
 namespace esphome {
 namespace esp32_ble_server {

@@ -47,13 +47,13 @@ void BLETextSensor::on_characteristic_read(const BLEReadResult &r) {
 }
 
 void BLETextSensor::on_notify(const BLENotifyEvent &e) {
-  if (e.handle != this->handle)  // routing is by BLEClientBase instance — no conn_id needed
+  if (e.handle != this->handle)
     return;
   this->publish_state(this->parse_data_(e.data, e.len));
 }
 
 std::string BLETextSensor::parse_data_(const uint8_t *value, uint16_t value_len) {
-  // Default: hex string of the raw value (matches upstream's behavior).
+  // Render the raw value as a lowercase hex string.
   std::string out;
   char buf[4];
   for (uint16_t i = 0; i < value_len; i++) {

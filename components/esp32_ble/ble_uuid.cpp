@@ -6,10 +6,7 @@
 namespace esphome {
 namespace esp32_ble {
 
-// from_raw(string) — parse a hex-stringified UUID like "12345678-1234-1234-1234-123456789abc"
-// or a length-based raw byte stream. We mirror what's needed by ble_presence /
-// ble_rssi which only call from_raw(const char *) on already-parsed binary
-// blobs.
+// Build from up to 16 already-binary bytes (no parsing); excess is truncated.
 ESPBTUUID ESPBTUUID::from_raw(const char *data, size_t length) {
   ESPBTUUID u;
   size_t n = length <= 16 ? length : 16;

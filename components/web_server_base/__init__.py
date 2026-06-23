@@ -1,11 +1,10 @@
 """Shadow web_server_base for host.
 
-This external component replaces upstream `web_server_base` on host so that
-the C++ header gets a USE_HOST branch (including our AsyncWebServer shim
-backed by POSIX sockets), without forking upstream esphome.
+Replaces web_server_base on host so the C++ header gets a USE_HOST branch
+(an AsyncWebServer shim backed by POSIX sockets).
 
-It also defangs the cv.only_on(...) gate inside upstream `web_server` so the
-stock `web_server:` config block works unchanged on host.
+Also neutralizes the cv.only_on(...) gate in `web_server` so the stock
+`web_server:` config block works unchanged on host.
 """
 
 from pathlib import Path
@@ -57,12 +56,9 @@ CONFIG_SCHEMA = cv.All(
 
 # --------------------------------------------------------------------------
 # Patch cv.only_on at import time so any CONFIG_SCHEMA built afterwards (e.g.
-# upstream web_server, mqtt, sntp) does not reject the host platform.
-#
-# We swap cv.only_on with a wrapper. On host, the wrapper returns a no-op
-# validator. On other platforms, behavior is unchanged. The patch is global
-# (cv is a singleton module) but only matters when this repo is loaded — the
-# whole point of this repo is to run ESPHome on the host platform.
+# web_server, mqtt, sntp) does not reject the host platform. On host the
+# wrapper returns a no-op validator; on other platforms behavior is unchanged.
+# The patch is process-global (cv is a singleton module).
 # --------------------------------------------------------------------------
 if not getattr(cv, "_pi_only_on_patched", False):
     _original_only_on = cv.only_on
@@ -87,11 +83,10 @@ async def to_code(config):
 
     if CORE.is_host:
         cg.add_define("WEB_SERVER_DEFAULT_HEADERS_COUNT", 1)
-        # Link with pthread for our std::thread accept loop.
+        # pthread for the std::thread accept loop.
         cg.add_build_flag("-pthread")
-        # Drop a pre-script into the build dir that injects USE_HOST branches
-        # into upstream web_server.h / list_entities.{h,cpp} just before PIO
-        # compiles them. Idempotent; safe across rebuilds.
+        # Pre-script that injects USE_HOST branches into web_server.h /
+        # list_entities.{h,cpp} before PIO compiles them. Idempotent.
         script_dst = CORE.relative_build_path("patch_web_server.py")
         copy_file_if_changed(
             Path(__file__).parent / "patch_web_server.py.script", script_dst

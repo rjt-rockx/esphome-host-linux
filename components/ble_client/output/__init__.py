@@ -1,4 +1,4 @@
-"""Shadow ble_client/output — write a bool to a GATT characteristic."""
+"""ble_client/output — write a bool to a GATT characteristic."""
 
 from __future__ import annotations
 

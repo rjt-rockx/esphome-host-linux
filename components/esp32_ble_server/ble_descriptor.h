@@ -6,11 +6,10 @@
 #if defined(USE_ESP32) || defined(USE_HOST)
 #ifdef USE_HOST
 
-// Host (Linux/BlueZ) shadow of esp32_ble_server's BLEDescriptor. Upstream this
-// wraps an IDF GATT descriptor attribute; on host it is a plain value+callback
-// holder. The owning BLEGattServer exports it as an org.bluez GattDescriptor1
-// (except the 0x2902 CCCD, which BlueZ owns — see ble_2902.h). ReadValue serves
-// value_; WriteValue copies bytes and fires on_write_callback_.
+// Host BLEDescriptor: a value + callback holder. The owning BLEGattServer
+// exports it as an org.bluez GattDescriptor1 (except the 0x2902 CCCD, which BlueZ
+// owns — see ble_2902.h). ReadValue serves value_; WriteValue copies bytes and
+// fires on_write_callback_.
 
 #include <cstdint>
 #include <cstring>
@@ -27,8 +26,7 @@ using namespace bytebuffer;
 
 class BLECharacteristic;
 
-// Base class for BLE descriptors. Public surface is byte-identical to upstream so
-// codegen + the automations compile unchanged.
+// Base class for BLE descriptors.
 class BLEDescriptor {
  public:
   BLEDescriptor(ESPBTUUID uuid, uint16_t max_len = 100, bool read = true, bool write = true);

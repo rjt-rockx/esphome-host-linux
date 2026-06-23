@@ -9,8 +9,6 @@ namespace bthome_advertiser {
 namespace {
 
 // BTHome v2 object table: object id -> (byte width, signed, scale factor).
-// Factors and signedness mirror the receive parser (esphome
-// bthome_mithermometer/bthome_ble.cpp) so a host->host round-trip is lossless.
 struct Spec {
   uint8_t id;
   uint8_t size;

@@ -16,9 +16,8 @@ static const char *const TAG = "esp32_ble_server";
 void BLEServer::setup() {
   global_ble_server = this;
 
-  // Build the whole GATT object tree and register it with BlueZ in one shot
-  // (RegisterApplication collapses the IDF per-characteristic create/start dance).
-  // DIS goes first so it is at the top of the table (cosmetic on BlueZ).
+  // Build the whole GATT object tree and register it with BlueZ in one shot via
+  // RegisterApplication. DIS goes first so it is at the top of the table.
   if (this->device_information_service_ != nullptr) {
     this->device_information_service_->do_create(this);
   }
@@ -90,7 +89,7 @@ void BLEServer::restart_advertising_() {
 }
 
 BLEService *BLEServer::create_service(ESPBTUUID uuid, bool advertise, uint16_t num_handles) {
-  // Pick the first free inst_id for this UUID (matches upstream).
+  // Pick the first free inst_id for this UUID.
   uint8_t inst_id = 0;
   for (; inst_id < 0xFF; inst_id++) {
     if (this->get_service(uuid, inst_id) == nullptr)

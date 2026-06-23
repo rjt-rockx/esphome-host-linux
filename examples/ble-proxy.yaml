@@ -1,6 +1,6 @@
-# Step 7: host as a Home Assistant Bluetooth proxy (active connections).
-# Secret-free example (no api encryption key). For a real HA hookup with a key,
-# copy to ble-proxy.local.yaml (gitignored) and add the key there.
+# Host as a Home Assistant Bluetooth proxy with active connections.
+# This example has no api encryption key. For a real HA hookup, copy to
+# ble-proxy.local.yaml (gitignored) and add the key there.
 esphome:
   name: ble-proxy
   platformio_options:

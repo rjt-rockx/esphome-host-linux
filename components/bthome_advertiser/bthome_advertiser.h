@@ -17,15 +17,11 @@
 namespace esphome {
 namespace bthome_advertiser {
 
-// Host (Linux/BlueZ) BTHome v2 advertiser. Registers its OWN org.bluez
+// Host (Linux/BlueZ) BTHome v2 advertiser. Registers its own org.bluez
 // LEAdvertisement1 (Type="broadcast") carrying a Service Data AD for UUID 0xFCD2
-// with a BTHome v2 payload, on the shared esp32_ble::BleWorker event loop — the
-// same proven path as esp32_ble_beacon, but emitting ServiceData instead of
-// ManufacturerData. A distinct object path lets it coexist with the GATT-server
-// and iBeacon advertisements (Step 10). There is no upstream ESPHome "advertise
-// BTHome" component, so this is host-only: the Linux box publishes its own
-// readings as BTHome for HA / other receivers (and as a controllable BTHome
-// source for tests).
+// with a BTHome v2 payload, on the shared esp32_ble::BleWorker event loop. A
+// distinct object path lets it coexist with other advertisements. The Linux box
+// publishes its own readings as BTHome for Home Assistant / other receivers.
 static constexpr const char *BTHOME_ADV_PATH = "/org/esphome/host/ble/bthome/advertisement0";
 
 class BTHomeAdvertiser : public Component, public esp32_ble::BusWorkerClient {

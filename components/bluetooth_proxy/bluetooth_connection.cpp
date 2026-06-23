@@ -17,7 +17,7 @@ using esp32_ble::ESP_UUID_LEN_128;
 
 static const char *const TAG = "bluetooth_proxy.connection";
 
-// --- UUID packing helpers (pure; identical to upstream — no IDF GATT calls) ---
+// --- UUID packing helpers (pure) ---
 static void fill_128bit_uuid_array(std::array<uint64_t, 2> &out, esp_bt_uuid_t uuid_source) {
   out[0] = uuid_source.len == ESP_UUID_LEN_128
                ? (((uint64_t) uuid_source.uuid.uuid128[15] << 56) | ((uint64_t) uuid_source.uuid.uuid128[14] << 48) |
@@ -56,7 +56,7 @@ void BluetoothConnection::dump_config() {
   BLEClientBase::dump_config();
 }
 
-// --- slot accounting (pure; identical to upstream) ---
+// --- slot accounting ---
 void BluetoothConnection::update_allocated_slot_(uint64_t find_value, uint64_t set_value) {
   auto &allocated = this->proxy_->connections_free_response_.allocated;
   for (auto &slot : allocated) {
@@ -87,8 +87,8 @@ void BluetoothConnection::loop() {
 }
 
 // Consume worker events directly (the proxy connection is not a node). The base
-// dispatch_event_ runs the ClientState machine + builds the service tree; we
-// then fan each result to aioesphomeapi.
+// advances the ClientState machine + builds the service tree; we then fan each
+// result to the API client.
 void BluetoothConnection::dispatch_event_(const esp32_ble_client::HostGattEvent &ev) {
   using esp32_ble_client::HostGattEvent;
   BLEClientBase::dispatch_event_(ev);  // advance state machine / build services_
@@ -96,12 +96,10 @@ void BluetoothConnection::dispatch_event_(const esp32_ble_client::HostGattEvent 
   auto *api_connection = this->proxy_->get_api_connection();
   switch (ev.kind) {
     case HostGattEvent::Kind::SERVICES_DISCOVERED:
-      // MTU + services are ready together on host. Tell HA we're connected with
-      // the real MTU. Do NOT auto-start streaming the service DB here — that
-      // matches upstream: send_service_ stays at INIT_SENDING_SERVICES until HA
-      // explicitly asks via bluetooth_gatt_send_services (which sets it to 0).
-      // Auto-starting here streamed services before HA requested them, so by the
-      // time HA called get_services send_service_ was already DONE → 0 services.
+      // MTU + services are ready together on host; report connected with the real
+      // MTU. Do NOT start streaming the service DB here: send_service_ stays at
+      // INIT_SENDING_SERVICES until the client explicitly requests it via
+      // bluetooth_gatt_send_services (which sets it to 0).
       this->proxy_->send_device_connection(this->address_, true, this->mtu_);
       this->proxy_->send_connections_free();
       break;
@@ -165,8 +163,8 @@ void BluetoothConnection::on_disconnect_complete(esp_err_t reason) {
 
 void BluetoothConnection::reset_connection_(esp_err_t reason) {
   this->proxy_->send_device_connection(this->address_, false, 0, reason);
-  // Do NOT send services_done on an interrupted discovery — aioesphomeapi times
-  // out and retries (matches upstream).
+  // Do NOT send services_done on an interrupted discovery — the client times out
+  // and retries.
   this->set_address(0);
   this->send_service_ = -3;  // INIT_SENDING_SERVICES
   this->seen_services_ = false;
@@ -174,8 +172,8 @@ void BluetoothConnection::reset_connection_(esp_err_t reason) {
 }
 
 // Build BluetoothGATTGetServicesResponse from the cached service tree (the host
-// worker already walked it — no IDF DB offset-walk). Batched to MAX_PACKET_SIZE,
-// one or more services per message, mirroring upstream's wire format.
+// worker already walked it). Batched to MAX_PACKET_SIZE, one or more services per
+// message.
 void BluetoothConnection::send_service_for_discovery_() {
   if (this->send_service_ < 0 || (size_t) this->send_service_ >= this->services_.size()) {
     this->send_service_ = -2;  // DONE_SENDING_SERVICES

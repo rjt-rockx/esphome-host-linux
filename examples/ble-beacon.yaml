@@ -4,8 +4,7 @@
 # (e.g. nRF Connect / Locate Beacon), bleak, or an esp32_ble_tracker on a second
 # device and you should see the iBeacon with the UUID/major/minor below.
 #
-# No credentials are committed (host binary; no API key / OTA). BlueZ owns the
-# radio, so advertising interval / TX power are adapter-global (informational).
+# BlueZ owns the radio, so advertising interval and TX power are adapter-global.
 esphome:
   name: ble-beacon
 

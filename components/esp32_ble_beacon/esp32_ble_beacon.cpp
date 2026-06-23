@@ -11,8 +11,8 @@ namespace esp32_ble_beacon {
 
 static const char *const TAG = "esp32_ble_beacon";
 
-// Apple's Bluetooth SIG company identifier — the ManufacturerData dict key for
-// iBeacon (and the 0x004C every iBeacon scanner, incl. esp32_ble_tracker, keys on).
+// Apple's Bluetooth SIG company identifier — the ManufacturerData key every
+// iBeacon scanner keys on.
 static constexpr uint16_t APPLE_COMPANY_ID = 0x004C;
 
 static const sd_bus_vtable ADV_VTABLE[] = {
@@ -46,8 +46,8 @@ float ESP32BLEBeacon::get_setup_priority() const { return setup_priority::AFTER_
 
 void ESP32BLEBeacon::setup() {
   this->mfg_data_ = this->build_ibeacon_payload_();
-  // Attach to the shared worker, then post a START so do_start_() (bus open +
-  // RegisterAdvertisement) runs on the worker thread that owns the sd_event loop.
+  // Post a START so bus open + RegisterAdvertisement run on the worker thread
+  // that owns the sd_event loop.
   esp32_ble::BleWorker::instance().attach_worker_client(this);
   {
     std::lock_guard<std::mutex> g(this->mu_);
@@ -144,8 +144,7 @@ int ESP32BLEBeacon::on_register_adv_reply_(sd_bus_message *reply, void *userdata
 
 int ESP32BLEBeacon::adv_get_type_(sd_bus *, const char *, const char *, const char *, sd_bus_message *reply, void *,
                                   sd_bus_error *) {
-  // Non-connectable, non-scannable broadcast — the BlueZ analogue of the IDF
-  // ADV_TYPE_NONCONN_IND that upstream esp32_ble_beacon uses.
+  // Non-connectable, non-scannable broadcast.
   return sd_bus_message_append(reply, "s", "broadcast");
 }
 

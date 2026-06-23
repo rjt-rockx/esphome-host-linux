@@ -1,7 +1,7 @@
 #pragma once
 
 // BTHome v2 service-data encoder. Pure logic — no D-Bus, no esphome core, no
-// hardware — so it is unit-testable standalone (see tests/unit/test_bthome_encoder.cpp).
+// hardware — so it is unit-testable standalone.
 //
 // BTHome v2 (https://bthome.io/format/) is broadcast as a Service Data AD for the
 // 16-bit UUID 0xFCD2. The payload is a device-information byte followed by a

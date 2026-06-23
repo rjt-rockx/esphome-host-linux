@@ -1,5 +1,5 @@
-# Step 5: pairing automation surface (compile-verify; live passkey needs a
-# pairing-required peripheral). Also confirms the non-default Agent1 path builds.
+# BLE pairing automation: passkey reply, numeric comparison, remove bond.
+# A live passkey flow needs a pairing-required peripheral.
 esphome:
   name: ble-client-pair
   platformio_options:

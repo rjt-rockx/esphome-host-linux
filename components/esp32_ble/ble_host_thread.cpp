@@ -43,8 +43,8 @@ void BleWorker::ensure_started_() {
     return;
   }
   this->thread_ = std::thread([this] { this->run_(); });
-  // Process-lifetime daemon worker: detach so the joinable std::thread doesn't
-  // std::terminate at exit (the singleton outlives all clients).
+  // Process-lifetime daemon worker that outlives all clients: detach so the
+  // joinable std::thread does not std::terminate at process exit.
   this->thread_.detach();
 }
 
