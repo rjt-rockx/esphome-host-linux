@@ -1,0 +1,15 @@
+# EXPECT_ERROR: interface must be a Linux CAN
+esphome:
+  name: socketcan-bad-if
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+
+canbus:
+  - platform: socketcan
+    id: can_a
+    can_id: 0x100
+    interface: "this-name-is-way-too-long-for-a-netdev"

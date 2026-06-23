@@ -1,0 +1,19 @@
+# EXPECT_ERROR: gpiochip
+esphome:
+  name: gpio-bad-chip
+host:
+linux_gpio:
+
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+
+binary_sensor:
+  - platform: gpio
+    name: "Button"
+    pin:
+      number: 17
+      chip: /dev/i2c-1
+      mode:
+        input: true

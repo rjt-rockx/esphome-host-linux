@@ -1,0 +1,46 @@
+# SocketCAN smoke test: receive and transmit CAN frames via a kernel CAN netdev.
+#
+# The bitrate CANNOT be set by ESPHome (the socket API has no such call); bring
+# the interface up at the OS level first:
+#   Real CAN HAT:    sudo ip link set can0 up type can bitrate 500000
+#   Virtual (test):  sudo modprobe vcan
+#                    sudo ip link add dev vcan0 type vcan
+#                    sudo ip link set up vcan0      # then use interface: vcan0
+#
+# Raw CAN sockets need CAP_NET_RAW. After compiling, grant it once:
+#   sudo setcap 'cap_net_raw=eip' <path to the compiled binary>
+# Send a test frame from another shell:  cansend can0 123#DEADBEEF
+
+esphome:
+  name: pi-can-test
+  friendly_name: Pi SocketCAN Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+api:
+logger:
+  level: DEBUG
+
+canbus:
+  - platform: socketcan
+    id: my_can
+    interface: can0
+    can_id: 0x100      # this node's default TX id (required by the canbus base)
+    on_frame:
+      - can_id: 0x123
+        then:
+          - lambda: |-
+              ESP_LOGI("can", "rx 0x123, %d bytes", x.size());
+
+# Periodically transmit a frame to exercise the send path.
+interval:
+  - interval: 5s
+    then:
+      - canbus.send:
+          canbus_id: my_can
+          can_id: 0x100
+          data: [0xDE, 0xAD, 0xBE, 0xEF]

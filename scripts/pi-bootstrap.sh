@@ -7,8 +7,6 @@ set -euo pipefail
 echo "=== apt deps ==="
 sudo apt-get update
 sudo apt-get install -y \
-  liblgpio-dev \
-  libgpiod-dev \
   libmosquitto-dev \
   bluez \
   libsystemd-dev \
@@ -38,9 +36,9 @@ echo "=== versions ==="
 # ldconfig usually lives in /sbin which isn't in a non-root user's PATH on
 # Debian; reach for it explicitly so the lib check still runs.
 if command -v ldconfig >/dev/null 2>&1; then
-  ldconfig -p | grep -E 'lgpio|gpiod|mosquitto' || true
+  ldconfig -p | grep -E 'mosquitto|systemd' || true
 elif [ -x /sbin/ldconfig ]; then
-  /sbin/ldconfig -p | grep -E 'lgpio|gpiod|mosquitto' || true
+  /sbin/ldconfig -p | grep -E 'mosquitto|systemd' || true
 fi
 
 echo "=== done ==="

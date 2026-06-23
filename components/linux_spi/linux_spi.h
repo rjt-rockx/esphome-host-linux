@@ -21,6 +21,7 @@ class LinuxSPIDelegate : public spi::SPIDelegate {
   // CE0 for /dev/spidev0.0, so double-toggling a user-supplied cs_pin tied to
   // CE0 is harmless; a separate user CS pin works as software-managed CS.
 
+  void begin_transaction() override;
   uint8_t transfer(uint8_t data) override;
   void transfer(uint8_t *ptr, size_t length) override;
   void transfer(const uint8_t *txbuf, uint8_t *rxbuf, size_t length) override;

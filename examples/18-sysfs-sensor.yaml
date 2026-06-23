@@ -1,0 +1,45 @@
+# linux_sysfs_sensor smoke test: publish kernel-exposed values (CPU temperature,
+# hwmon voltages/temperatures, IIO ADC channels) as ESPHome sensors.
+#
+# Design: the exact sysfs path + a scale factor are given explicitly. There is
+# deliberately NO auto-discovery -- hwmonN / iio:deviceN indices are assigned by
+# probe order and are NOT stable across boots. Before pinning a hwmon path,
+# check which chip it is:  cat /sys/class/hwmon/hwmon*/name
+# thermal_zone0/temp is stable on the Pi (it is the SoC sensor).
+
+esphome:
+  name: pi-sysfs-test
+  friendly_name: Pi Sysfs Sensor Test
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+host:
+api:
+logger:
+  level: DEBUG
+
+sensor:
+  # Raspberry Pi SoC temperature: thermal_zone reports millidegrees C.
+  - platform: linux_sysfs_sensor
+    name: "CPU Temperature"
+    path: /sys/class/thermal/thermal_zone0/temp
+    scale: 0.001
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 30s
+
+  # hwmon voltage input: reports millivolts -> volts.
+  - platform: linux_sysfs_sensor
+    name: "Supply Voltage"
+    path: /sys/class/hwmon/hwmon0/in1_input
+    scale: 0.001
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    update_interval: 30s

@@ -1,4 +1,4 @@
-# Phase 5a smoke test: edge-triggered interrupts via lgpio alerts.
+# Phase 5a smoke test: edge-triggered interrupts via the GPIO chardev v2 ABI.
 #
 # Exercises linux_gpio's attach_interrupt() path using stock pulse_counter.
 #
@@ -8,10 +8,11 @@
 #     or a button you can mash. For a real benchmark, connect a square-wave
 #     signal generator at a known frequency.
 #
-# Note: callbacks run on lgpio's worker thread, not in interrupt context.
-# Latency is on the order of microseconds (Linux scheduling), not nanoseconds.
-# Fine for pulse rates up to a few kHz; not suitable for very high-frequency
-# counting.
+# Note: callbacks run on a background poll thread (GPIOAlertThread), not in
+# interrupt context. Latency is on the order of microseconds (Linux scheduling),
+# not nanoseconds. Fine for pulse rates up to a few kHz; not suitable for very
+# high-frequency counting. Add `debounce_us:` to the pin for noisy mechanical
+# contacts (kernel-side debounce, no busy-waiting).
 
 esphome:
   name: pi-pulse-test
@@ -37,7 +38,10 @@ sensor:
       mode:
         input: true
         pullup: true
+    # Host limitation: the host's ISRInternalGPIOPin::digital_read() returns a
+    # constant, so pulse_counter can't tell rising from falling. Count every edge
+    # (both modes the same) -> 2 counts/pulse; a rising-only config counts zero.
     count_mode:
       rising_edge: INCREMENT
-      falling_edge: DISABLE
+      falling_edge: INCREMENT
     update_interval: 10s

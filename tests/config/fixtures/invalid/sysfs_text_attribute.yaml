@@ -1,0 +1,15 @@
+# EXPECT_ERROR: text attribute
+esphome:
+  name: sysfs-text-attribute
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+
+sensor:
+  - platform: linux_sysfs_sensor
+    name: "Chip Name (not numeric)"
+    path: /sys/class/hwmon/hwmon0/name
+    update_interval: 30s

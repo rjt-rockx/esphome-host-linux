@@ -27,6 +27,12 @@ binary_sensor:
     name: "Test Button"
     pin:
       number: 17
+      # chip: defaults to /dev/gpiochip0. Set it for boards with multiple
+      # gpiochips (e.g. the Pi 5's RP1 is /dev/gpiochip4 on some kernels).
+      chip: /dev/gpiochip0
+      # Optional kernel-side debounce in microseconds (no busy-waiting): the
+      # GPIO chardev applies it in-kernel via GPIO_V2_LINE_ATTR_ID_DEBOUNCE.
+      debounce_us: 5000
       mode:
         input: true
         pullup: true

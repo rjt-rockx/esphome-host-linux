@@ -1,0 +1,22 @@
+# Scenario: publish the host's SoC temperature from sysfs as an ESPHome sensor.
+esphome:
+  name: sysfs-valid
+host:
+api:
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+
+sensor:
+  - platform: linux_sysfs_sensor
+    name: "CPU Temp"
+    path: /sys/class/thermal/thermal_zone0/temp
+    scale: 0.001
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+    update_interval: 30s

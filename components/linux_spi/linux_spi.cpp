@@ -7,6 +7,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 
@@ -16,6 +17,10 @@ namespace esphome {
 namespace linux_spi {
 
 static const char *const TAG = "linux_spi";
+
+// spidev bounds a single SPI_IOC_MESSAGE by its module 'bufsiz' parameter
+// (default 4096); larger transfers are split into chunks of this size.
+static const size_t SPI_CHUNK_MAX = 4096;
 
 // Map ESPHome's mode enum to the kernel's CPOL/CPHA bit pattern.
 static uint8_t kernel_mode_from(spi::SPIMode mode) {
@@ -41,25 +46,45 @@ LinuxSPIDelegate::LinuxSPIDelegate(int fd, uint32_t data_rate, spi::SPIBitOrder 
     this->kernel_mode_ |= SPI_LSB_FIRST;
 }
 
+// Program this device's mode on the shared fd once per transaction. The
+// spi_ioc_transfer struct carries speed/bits but not CPOL/CPHA, so mode is set
+// via ioctl here rather than per byte. The return must be checked: a controller
+// without hardware LSB-first rejects that bit, and silently running MSB-first
+// would corrupt data -- so drop the bit, warn once, and continue (subsequent
+// transactions then succeed because kernel_mode_ no longer requests it).
+void LinuxSPIDelegate::begin_transaction() {
+  if (this->fd_ >= 0 && ioctl(this->fd_, SPI_IOC_WR_MODE, &this->kernel_mode_) < 0) {
+    if (this->kernel_mode_ & SPI_LSB_FIRST) {
+      ESP_LOGW(TAG, "Controller rejected LSB-first; falling back to MSB-first (data may need byte-reversal)");
+      this->kernel_mode_ &= ~SPI_LSB_FIRST;
+      if (ioctl(this->fd_, SPI_IOC_WR_MODE, &this->kernel_mode_) < 0)
+        ESP_LOGW(TAG, "SPI_IOC_WR_MODE failed: %s", strerror(errno));
+    } else {
+      ESP_LOGW(TAG, "SPI_IOC_WR_MODE failed: %s", strerror(errno));
+    }
+  }
+  spi::SPIDelegate::begin_transaction();  // base toggles cs_pin_ (no-op for NULL_PIN)
+}
+
 void LinuxSPIDelegate::do_transfer_(const uint8_t *tx, uint8_t *rx, size_t length) {
   if (this->fd_ < 0 || length == 0)
     return;
 
-  struct spi_ioc_transfer xfer{};
-  xfer.tx_buf = reinterpret_cast<__u64>(tx);
-  xfer.rx_buf = reinterpret_cast<__u64>(rx);
-  xfer.len = static_cast<__u32>(length);
-  xfer.speed_hz = this->data_rate_;
-  xfer.bits_per_word = this->bits_per_word_;
-  xfer.cs_change = 0;
-  // SPI mode is configured at the fd level via SPI_IOC_WR_MODE before each
-  // transaction; cheaper than per-message reconfiguration since the kernel
-  // caches state and only reprograms the controller on change.
-  ioctl(this->fd_, SPI_IOC_WR_MODE, &this->kernel_mode_);
+  for (size_t off = 0; off < length; off += SPI_CHUNK_MAX) {
+    size_t chunk = std::min(SPI_CHUNK_MAX, length - off);
+    struct spi_ioc_transfer xfer{};
+    xfer.tx_buf = tx ? reinterpret_cast<__u64>(tx + off) : 0;
+    xfer.rx_buf = rx ? reinterpret_cast<__u64>(rx + off) : 0;
+    xfer.len = static_cast<__u32>(chunk);
+    xfer.speed_hz = this->data_rate_;
+    xfer.bits_per_word = this->bits_per_word_;
+    xfer.cs_change = 0;
 
-  int rc = ioctl(this->fd_, SPI_IOC_MESSAGE(1), &xfer);
-  if (rc < 0) {
-    ESP_LOGW(TAG, "SPI_IOC_MESSAGE failed: %s", strerror(errno));
+    int rc = ioctl(this->fd_, SPI_IOC_MESSAGE(1), &xfer);
+    if (rc < static_cast<int>(chunk)) {
+      ESP_LOGW(TAG, "SPI_IOC_MESSAGE failed (%d/%zu): %s", rc, chunk, strerror(errno));
+      return;
+    }
   }
 }
 
@@ -97,7 +122,15 @@ void LinuxSPIDelegate::write16(uint16_t data) {
 void LinuxSPIComponent::setup() {
   this->fd_ = open(this->device_path_.c_str(), O_RDWR);
   if (this->fd_ < 0) {
-    ESP_LOGE(TAG, "Failed to open %s: %s", this->device_path_.c_str(), strerror(errno));
+    int err = errno;
+    if (err == ENOENT) {
+      ESP_LOGE(TAG, "[%s] device not found (enable the SPI overlay, e.g. dtparam=spi=on)",
+               this->device_path_.c_str());
+    } else if (err == EACCES) {
+      ESP_LOGE(TAG, "[%s] permission denied (add user to 'spi' group)", this->device_path_.c_str());
+    } else {
+      ESP_LOGE(TAG, "[%s] failed to open: %s", this->device_path_.c_str(), strerror(err));
+    }
     this->mark_failed();
     return;
   }
@@ -106,7 +139,7 @@ void LinuxSPIComponent::setup() {
   if (ioctl(this->fd_, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0)
     ESP_LOGW(TAG, "SPI_IOC_WR_BITS_PER_WORD failed: %s", strerror(errno));
 
-  // Skip the upstream pin setup; install our LinuxSPIBus directly.
+  // Drive the spidev fd directly; no GPIO pin setup needed.
   this->spi_bus_ = new LinuxSPIBus(this->fd_);  // NOLINT(cppcoreguidelines-owning-memory)
   ESP_LOGI(TAG, "Opened %s (fd=%d)", this->device_path_.c_str(), this->fd_);
 }

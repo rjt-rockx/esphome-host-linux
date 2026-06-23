@@ -1,0 +1,25 @@
+# Scenario: a gpio binary_sensor using linux_gpio's new chip: and debounce_us:
+# options (kernel chardev v2 ABI, no lgpio).
+esphome:
+  name: gpio-debounce-valid
+host:
+linux_gpio:
+api:
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+
+binary_sensor:
+  - platform: gpio
+    name: "Button"
+    pin:
+      number: 17
+      chip: /dev/gpiochip0
+      debounce_us: 5000
+      mode:
+        input: true
+        pullup: true

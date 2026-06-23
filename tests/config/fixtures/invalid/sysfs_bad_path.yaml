@@ -1,0 +1,15 @@
+# EXPECT_ERROR: /sys/
+esphome:
+  name: sysfs-bad-path
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+
+sensor:
+  - platform: linux_sysfs_sensor
+    name: "Bad Path"
+    path: /etc/passwd
+    update_interval: 30s

@@ -8,9 +8,11 @@ ESPHome's `host` platform compiles configs to a native Linux binary but stubs ou
 
 ## What works
 
-- **`linux_gpio`** -- GPIO via lgpio + `/dev/gpiochip*`. Input, output, internal pulls, edge interrupts.
-- **`linux_i2c`** -- I2C via `/dev/i2c-N` ioctls. Stock `i2c:`-based sensors work unmodified (BME280, etc.).
-- **`linux_spi`** -- SPI via `/dev/spidev*` ioctls. Stock `spi:`-based sensors work (MAX31865, etc.).
+- **`linux_gpio`** -- GPIO via the kernel character-device v2 ABI (`<linux/gpio.h>`, **no external library**). Input, output, internal pulls, and edge interrupts. Per-pin `chip:` selects the gpiochip (defaults to `/dev/gpiochip0`); optional `debounce_us:` enables kernel-side debounce.
+- **`linux_i2c`** -- *(deprecated)* I2C via `/dev/i2c-N` ioctls. ESPHome **2026.6.0** added native host I2C upstream ([#14489](https://github.com/esphome/esphome/pull/14489)) -- prefer `i2c: { device: /dev/i2c-N }`. `linux_i2c` still works and emits a deprecation warning at build time; stock `i2c:`-based sensors (BME280, etc.) work either way.
+- **`linux_spi`** -- SPI via `/dev/spidev*` ioctls. Stock `spi:`-based sensors work (MAX31865, etc.). Upstream `spi:` has no host support, so this component is the only path.
+- **`socketcan`** -- CAN bus via the kernel SocketCAN API (`<linux/can.h>`, no external library). A `canbus:` platform. Bring the interface up first with `ip link set canX up type can bitrate N` (the bitrate isn't settable from userspace); the compiled binary needs `cap_net_raw`.
+- **`linux_sysfs_sensor`** -- publish any numeric sysfs attribute (SoC temperature, hwmon volts, IIO ADC) as a `sensor:` with an explicit `path:` + `scale:`. No auto-discovery -- `hwmonN`/`iio:deviceN` indices aren't stable across boots, so pin the exact path (check `cat /sys/class/hwmon/hwmon*/name` first).
 - **`linux_w1`** -- 1-Wire via kernel `/sys/bus/w1/`. DS18B20 and friends.
 - **`linux_time`** -- expose the kernel wall clock as a `time:` platform.
 - **UART** -- ESPHome's upstream `uart:` already handles `port: /dev/ttyXXX` on host.
@@ -24,7 +26,7 @@ Tested on Pi 5 (Debian 13 trixie, kernel 6.12). CI also compiles every example o
 
 Pi OS Bookworm, Debian 12, or any distro with the same toolchain. The `scripts/pi-bootstrap.sh` script handles the lot:
 
-- `liblgpio-dev`, `libmosquitto-dev`, `bluez`, `libcap2-bin`, `build-essential`
+- `libmosquitto-dev`, `bluez`, `libcap2-bin`, `build-essential` (no lgpio needed -- `linux_gpio` talks to the kernel GPIO chardev directly)
 - User in the `gpio`, `i2c`, `spi`, `dialout` groups
 - ESPHome installed in a venv
 
@@ -34,7 +36,7 @@ For BLE, the compiled binary needs `cap_net_admin,cap_net_raw`. After every `esp
 scripts/pi-bless-binary.sh .esphome/build/<name>/.pioenvs/<name>/program
 ```
 
-Pi 5 note: the GPIO header is on `/dev/gpiochip0` via the `pinctrl-rp1` driver. The old "gpiochip4" advice is stale.
+Pi 5 note: the GPIO header is on `/dev/gpiochip0` via the `pinctrl-rp1` driver (not `gpiochip4`, which some older guides cite).
 
 ## Usage
 

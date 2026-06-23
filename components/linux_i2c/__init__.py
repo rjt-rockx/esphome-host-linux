@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import esphome.codegen as cg
@@ -7,6 +8,8 @@ from esphome import final_validate as fv
 from esphome.const import CONF_ID, CONF_SCAN
 from esphome.core import CORE, CoroPriority, coroutine_with_priority
 from esphome.helpers import copy_file_if_changed
+
+_LOGGER = logging.getLogger(__name__)
 
 CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
@@ -115,6 +118,19 @@ def _ensure_host_patch_script():
 
 @coroutine_with_priority(CoroPriority.BUS)
 async def to_code(config):
+    _LOGGER.warning(
+        "linux_i2c is deprecated as of ESPHome 2026.6.0, which includes native "
+        "I2C host support (esphome/esphome#14489). Replace:\n"
+        "  linux_i2c:\n"
+        "    device: %s\n"
+        "with the upstream i2c component:\n"
+        "  i2c:\n"
+        "    device: %s\n"
+        "linux_i2c still works for now but will be removed in a future release. "
+        "See https://esphome.io/components/i2c",
+        config[CONF_DEVICE],
+        config[CONF_DEVICE],
+    )
     cg.add_define("USE_I2C")
     cg.add_global(cg.esphome_ns.namespace("i2c").using)
     var = cg.new_Pvariable(config[CONF_ID])

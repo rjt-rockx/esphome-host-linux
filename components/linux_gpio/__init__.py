@@ -1,4 +1,5 @@
 import logging
+import re
 
 from esphome import pins
 import esphome.codegen as cg
@@ -22,6 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CONF_CHIP = "chip"
 DEFAULT_CHIP = "/dev/gpiochip0"
+CONF_DEBOUNCE_US = "debounce_us"
 
 linux_gpio_ns = cg.esphome_ns.namespace("linux_gpio")
 LinuxGPIOPin = linux_gpio_ns.class_("LinuxGPIOPin", cg.InternalGPIOPin)
@@ -34,8 +36,10 @@ CONFIG_SCHEMA = cv.Schema({})
 
 
 async def to_code(config):
-    cg.add_build_flag("-llgpio")
-    cg.add_define("USE_LINUX_GPIO")
+    # GPIO edge interrupts are dispatched from a background std::thread
+    # (GPIOAlertThread); link against pthread. No external GPIO library is
+    # used -- the implementation talks to the kernel chardev v2 ABI directly.
+    cg.add_build_flag("-pthread")
 
 
 def _translate_pin(value):
@@ -62,13 +66,25 @@ def validate_gpio_pin(value):
     return cv.int_range(min=0, max=63)(num)
 
 
+def validate_chip_path(value):
+    value = cv.string(value)
+    if not re.match(r"^/dev/gpiochip\w+$", value):
+        raise cv.Invalid(
+            "chip must be an absolute gpiochip device path "
+            f"(e.g. /dev/gpiochip0), got: {value!r}"
+        )
+    return value
+
+
 LINUX_GPIO_PIN_SCHEMA = pins.gpio_base_schema(
     LinuxGPIOPin,
     validate_gpio_pin,
     modes=[CONF_INPUT, CONF_OUTPUT, CONF_OPEN_DRAIN, CONF_PULLUP, CONF_PULLDOWN],
 ).extend(
     {
-        cv.Optional(CONF_CHIP, default=DEFAULT_CHIP): cv.string,
+        cv.Optional(CONF_CHIP, default=DEFAULT_CHIP): validate_chip_path,
+        # Kernel-side debounce (GPIO_V2_LINE_ATTR_ID_DEBOUNCE), microseconds.
+        cv.Optional(CONF_DEBOUNCE_US): cv.uint32_t,
     }
 )
 
@@ -80,6 +96,11 @@ async def linux_gpio_pin_to_code(config):
     if config[CONF_INVERTED]:
         cg.add(var.set_inverted(True))
     cg.add(var.set_flags(pins.gpio_flags_expr(config[CONF_MODE])))
+    if (debounce_us := config.get(CONF_DEBOUNCE_US)) is not None:
+        cg.add(var.set_debounce_us(debounce_us))
+    # The edge-interrupt path uses a background std::thread; ensure pthread is
+    # linked even if the user never declares a top-level `linux_gpio:` block.
+    cg.add_build_flag("-pthread")
     return var
 
 
