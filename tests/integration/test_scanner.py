@@ -37,3 +37,31 @@ def test_scanner_handles_advert_with_no_rssi(bluez, run_host):
 
     time.sleep(0.5)
     assert host.proc.poll() is None, "host crashed on an advert with no RSSI"
+
+
+def test_oneshot_scan_stops_and_restarts(bluez, run_host):
+    # continuous: false with duration: 2s — the scanner must stop the backend
+    # (StopDiscovery) after the first period instead of scanning forever, and
+    # the on_boot start_scan() at ~8s must start a fresh period.
+    import time
+
+    host = run_host("ble-oneshot")
+    assert bluez.wait_for_call("StartDiscovery", timeout=20), "scan never started"
+
+    # One-shot: the scan ends on its own after ~2s.
+    assert bluez.wait_for_call("StopDiscovery", timeout=15), "one-shot scan never stopped"
+    assert host.wait_for_log("Scan stopped", timeout=5), "no scan-stop log"
+    # ...and stays stopped: no second StartDiscovery before the 8s restart.
+    time.sleep(1.0)
+    assert len(bluez.calls("StartDiscovery")) == 1, "one-shot scan restarted itself"
+
+    # The delayed start_scan() lambda brings the scanner back for a new period.
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and len(bluez.calls("StartDiscovery")) < 2:
+        time.sleep(0.2)
+    assert len(bluez.calls("StartDiscovery")) >= 2, "start_scan() did not restart the scan"
+    # The restarted one-shot period ends too.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and len(bluez.calls("StopDiscovery")) < 2:
+        time.sleep(0.2)
+    assert len(bluez.calls("StopDiscovery")) >= 2, "restarted scan never stopped"

@@ -1,0 +1,33 @@
+# One-shot scan (continuous: false): the scan must stop by itself after
+# `duration` (StopDiscovery, one on_scan_end), and a later start_scan() call
+# must bring it back for another period. Exercised by the integration tests.
+esphome:
+  name: ble-oneshot
+  on_boot:
+    then:
+      # Well past the 2 s one-shot window: proves a stopped scanner restarts.
+      - delay: 8s
+      - lambda: id(tracker).start_scan();
+
+host:
+
+logger:
+  level: VERBOSE
+  logs:
+    esp32_ble_tracker: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32_ble_tracker:
+  id: tracker
+  scan_parameters:
+    continuous: false
+    duration: 2s
+
+binary_sensor:
+  - platform: ble_presence
+    name: "oneshot presence"
+    mac_address: A4:C1:38:00:00:10

@@ -3,10 +3,12 @@
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -230,17 +232,70 @@ float ESP32BLETracker::get_setup_priority() const { return setup_priority::AFTER
 void ESP32BLETracker::setup() {
   this->merger_.bind(&this->dispatcher_, &this->scan_continuous_, TAG);
   this->read_adapter_mac_();
-  this->scan_period_start_ = millis();
+  this->start_scan_();
+}
+
+void ESP32BLETracker::start_scan() {
+  if (this->scanner_state_ == ScannerState::RUNNING)
+    return;
+  this->start_scan_();
+}
+
+void ESP32BLETracker::stop_scan() {
+  this->scan_continuous_ = false;
+  if (this->scanner_state_ != ScannerState::RUNNING)
+    return;
+  this->stop_scan_();
+}
+
+void ESP32BLETracker::start_scan_() {
+  // Reap a previous worker; it has already been asked to stop.
+  this->stop_thread_ = true;
+  if (this->scanner_thread_.joinable())
+    this->scanner_thread_.join();
   this->stop_thread_ = false;
+  this->thread_exited_ = false;
+  // Same clock as loop()'s `now`: a fresh millis() here would be ahead of the
+  // cached loop time and make the period check underflow.
+  this->scan_period_start_ = App.get_loop_component_start_time();
   if (this->use_hci_backend_) {
-    this->scanner_thread_ = std::thread([this] { this->scanner_thread_main_(); });
+    this->scanner_thread_ = std::thread([this] {
+      this->scanner_thread_main_();
+      this->thread_exited_ = true;
+    });
   } else {
-    this->scanner_thread_ = std::thread([this] { this->dbus_scanner_thread_main_(); });
+    this->scanner_thread_ = std::thread([this] {
+      this->dbus_scanner_thread_main_();
+      this->thread_exited_ = true;
+    });
   }
-  // Notify scanner-state listeners that scanning is running (host scan is
-  // always-on once the worker starts).
+  this->set_scanner_state_(ScannerState::RUNNING);
+}
+
+void ESP32BLETracker::stop_scan_() {
+  this->stop_thread_ = true;
+  // The worker notices within one poll interval (200 ms); join so the backend
+  // is fully stopped (StopDiscovery / scan-disable sent) before IDLE is
+  // reported.
+  if (this->scanner_thread_.joinable())
+    this->scanner_thread_.join();
+  this->thread_exited_ = false;
+  ESP_LOGD(TAG, "Scan stopped");
+  this->fire_scan_end_();
+  this->set_scanner_state_(ScannerState::IDLE);
+}
+
+void ESP32BLETracker::fire_scan_end_() {
+  // Deliver held advertisements whose scan response never arrived (unmerged)
+  // BEFORE on_scan_end fires.
+  this->merger_.flush();
+  this->dispatcher_.on_scan_end();
+}
+
+void ESP32BLETracker::set_scanner_state_(ScannerState state) {
+  this->scanner_state_ = state;
   for (auto *l : this->scanner_state_listeners_)
-    l->on_scanner_state(ScannerState::RUNNING);
+    l->on_scanner_state(state);
 }
 
 void ESP32BLETracker::dump_config() {
@@ -286,12 +341,25 @@ void ESP32BLETracker::loop() {
   if (!this->merger_.empty())
     this->merger_.sweep(now);
 
-  // Period timer: fire on_scan_end() once per scan duration, mirroring
-  // esp32_ble_tracker's cleanup_scan_state_().
-  if (now - this->scan_period_start_ >= this->scan_duration_s_ * 1000) {
-    this->scan_period_start_ = now;
-    this->merger_.flush();
-    this->dispatcher_.on_scan_end();
+  // Reconcile: the worker exited on its own (backend failed to start, or a
+  // fatal read error killed a running scan). Reap it and report IDLE so a
+  // later start_scan() can retry.
+  if (this->scanner_state_ == ScannerState::RUNNING && this->thread_exited_.load(std::memory_order_relaxed)) {
+    this->stop_scan_();
+  }
+
+  // Period timer, mirroring core's trackers: a continuous scan fires
+  // on_scan_end() once per duration and keeps scanning; a one-shot scan
+  // (continuous: false) stops the backend after its first duration and fires
+  // on_scan_end() once. Restart is external (start_scan()).
+  if (this->scanner_state_ == ScannerState::RUNNING && this->scan_running_.load(std::memory_order_relaxed) &&
+      now - this->scan_period_start_ >= this->scan_duration_s_ * 1000) {
+    if (this->scan_continuous_) {
+      this->scan_period_start_ = now;
+      this->fire_scan_end_();
+    } else {
+      this->stop_scan_();
+    }
   }
 
   // Promote any client a listener just moved to DISCOVERED. Cheap fast-path:
@@ -516,6 +584,18 @@ void ESP32BLETracker::scanner_thread_main_() {
 
   uint8_t buf[1024];
   while (!this->stop_thread_.load()) {
+    // Poll with a timeout so stop_thread_ is checked promptly even when no
+    // advertisements arrive (a blocking read() could park here forever).
+    pollfd pfd{this->hci_fd_, POLLIN, 0};
+    int pr = poll(&pfd, 1, 200);
+    if (pr < 0) {
+      if (errno == EINTR)
+        continue;
+      ESP_LOGW(TAG, "HCI poll error: %s", std::strerror(errno));
+      break;
+    }
+    if (pr == 0)
+      continue;
     ssize_t n = read(this->hci_fd_, buf, sizeof(buf));
     if (n < 0) {
       if (errno == EINTR)
@@ -557,8 +637,27 @@ void ESP32BLETracker::scanner_thread_main_() {
 // Parse a single org.bluez.Device1 property dictionary (a{sv}) that the message
 // is currently positioned to enter, re-encoding it into `frame`. Returns true if
 // at least an Address was found. The message must be positioned at the 'a{sv}'.
+//
+// The properties arrive in whatever order BlueZ put them in the dict, so they
+// are staged first and encoded afterwards in a fixed priority order (see below).
 bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
   bool have_address = false;
+  std::string name;
+  bool have_tx_power = false;
+  uint8_t tx_power = 0;
+  bool have_appearance = false;
+  uint16_t appearance = 0;
+  // Service UUIDs packed LSB-first, grouped by width: same-width UUIDs share
+  // one complete-list AD element (types 0x03/0x05/0x07) instead of one element
+  // each, saving 2 bytes per extra UUID in the 62-byte frame.
+  std::vector<uint8_t> uuid16, uuid32, uuid128;
+  // Service data + manufacturer data elements, in arrival order.
+  struct StagedAd {
+    uint8_t type;
+    std::vector<uint8_t> payload;
+  };
+  std::vector<StagedAd> data_elements;
+
   int r = sd_bus_message_enter_container(m, 'a', "{sv}");
   if (r < 0)
     return false;
@@ -581,12 +680,10 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
       if (type != nullptr && std::strcmp(type, "random") == 0)
         frame.addr_type = ble_device_base::BLE_ADDR_TYPE_RANDOM;
     } else if (std::strcmp(key, "Name") == 0) {
-      const char *name = nullptr;
-      sd_bus_message_read(m, "v", "s", &name);
-      if (name != nullptr) {
-        ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LOCAL_NAME,
-                  reinterpret_cast<const uint8_t *>(name), std::strlen(name));
-      }
+      const char *name_str = nullptr;
+      sd_bus_message_read(m, "v", "s", &name_str);
+      if (name_str != nullptr)
+        name = name_str;
     } else if (std::strcmp(key, "RSSI") == 0) {
       int16_t rssi = 0;
       sd_bus_message_read(m, "v", "n", &rssi);
@@ -594,13 +691,11 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
     } else if (std::strcmp(key, "TxPower") == 0) {
       int16_t tx = 0;
       sd_bus_message_read(m, "v", "n", &tx);
-      uint8_t v = static_cast<uint8_t>(static_cast<int8_t>(tx));
-      ad_append(frame.data, frame.len, sizeof(frame.data), AD_TX_POWER_LEVEL, &v, 1);
+      tx_power = static_cast<uint8_t>(static_cast<int8_t>(tx));
+      have_tx_power = true;
     } else if (std::strcmp(key, "Appearance") == 0) {
-      uint16_t app = 0;
-      sd_bus_message_read(m, "v", "q", &app);
-      uint8_t v[2] = {static_cast<uint8_t>(app & 0xff), static_cast<uint8_t>(app >> 8)};
-      ad_append(frame.data, frame.len, sizeof(frame.data), AD_APPEARANCE, v, sizeof(v));
+      sd_bus_message_read(m, "v", "q", &appearance);
+      have_appearance = true;
     } else if (std::strcmp(key, "UUIDs") == 0) {
       sd_bus_message_enter_container(m, 'v', "as");
       sd_bus_message_enter_container(m, 'a', "s");
@@ -610,22 +705,17 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
         if (uuid == nullptr || !parse_uuid_str(uuid, raw))
           continue;
         uint32_t short_value = 0;
-        // One AD element per UUID rather than one concatenated list: the parser
-        // treats each element independently, and mixed widths cannot share one.
         switch (shorten_uuid(raw, short_value)) {
-          case 2: {
-            uint8_t v[2] = {static_cast<uint8_t>(short_value & 0xff), static_cast<uint8_t>(short_value >> 8)};
-            ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LIST_UUID16, v, sizeof(v));
+          case 2:
+            uuid16.push_back(static_cast<uint8_t>(short_value & 0xff));
+            uuid16.push_back(static_cast<uint8_t>(short_value >> 8));
             break;
-          }
-          case 4: {
-            uint8_t v[4] = {static_cast<uint8_t>(short_value & 0xff), static_cast<uint8_t>(short_value >> 8),
-                            static_cast<uint8_t>(short_value >> 16), static_cast<uint8_t>(short_value >> 24)};
-            ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LIST_UUID32, v, sizeof(v));
+          case 4:
+            for (int shift = 0; shift < 32; shift += 8)
+              uuid32.push_back(static_cast<uint8_t>(short_value >> shift));
             break;
-          }
           default:
-            ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LIST_UUID128, raw, 16);
+            uuid128.insert(uuid128.end(), raw, raw + 16);
             break;
         }
       }
@@ -648,7 +738,7 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
         std::vector<uint8_t> body;
         read_byte_array(m, body);
         payload.insert(payload.end(), body.begin(), body.end());
-        ad_append(frame.data, frame.len, sizeof(frame.data), AD_MANUFACTURER_DATA, payload.data(), payload.size());
+        data_elements.push_back({AD_MANUFACTURER_DATA, std::move(payload)});
         sd_bus_message_exit_container(m);  // v
         sd_bus_message_exit_container(m);  // e
       }
@@ -684,7 +774,7 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
             payload.assign(raw, raw + 16);
           }
           payload.insert(payload.end(), body.begin(), body.end());
-          ad_append(frame.data, frame.len, sizeof(frame.data), ad_type, payload.data(), payload.size());
+          data_elements.push_back({ad_type, std::move(payload)});
         }
         sd_bus_message_exit_container(m);  // v
         sd_bus_message_exit_container(m);  // e
@@ -698,6 +788,38 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
     sd_bus_message_exit_container(m);  // dict entry
   }
   sd_bus_message_exit_container(m);  // a{sv}
+
+  // Encode in priority order: stock parsers key on service data and
+  // manufacturer data, so those go first; UUID lists next; appearance,
+  // TX power, and the name last, like real advertisers that push the name to
+  // the scan response. When the 62-byte frame fills up it is the trailing
+  // (least critical) elements that get truncated.
+  for (const auto &el : data_elements)
+    ad_append(frame.data, frame.len, sizeof(frame.data), el.type, el.payload.data(), el.payload.size());
+  // A UUID list that no longer fits whole is trimmed to as many complete
+  // entries as fit rather than dropped.
+  auto append_uuid_list = [&frame](uint8_t type, const std::vector<uint8_t> &packed, size_t width) {
+    if (packed.empty())
+      return;
+    size_t avail = sizeof(frame.data) - frame.len;
+    if (avail < 2 + width)
+      return;
+    size_t n = std::min(packed.size(), ((avail - 2) / width) * width);
+    ad_append(frame.data, frame.len, sizeof(frame.data), type, packed.data(), n);
+  };
+  append_uuid_list(AD_COMPLETE_LIST_UUID16, uuid16, 2);
+  append_uuid_list(AD_COMPLETE_LIST_UUID32, uuid32, 4);
+  append_uuid_list(AD_COMPLETE_LIST_UUID128, uuid128, 16);
+  if (have_appearance) {
+    uint8_t v[2] = {static_cast<uint8_t>(appearance & 0xff), static_cast<uint8_t>(appearance >> 8)};
+    ad_append(frame.data, frame.len, sizeof(frame.data), AD_APPEARANCE, v, sizeof(v));
+  }
+  if (have_tx_power)
+    ad_append(frame.data, frame.len, sizeof(frame.data), AD_TX_POWER_LEVEL, &tx_power, 1);
+  if (!name.empty()) {
+    ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LOCAL_NAME,
+              reinterpret_cast<const uint8_t *>(name.c_str()), name.size());
+  }
   return have_address;
 }
 

@@ -199,6 +199,13 @@ class ESP32BLETracker : public Component {
   void dump_config() override;
   float get_setup_priority() const override;
 
+  // Mirrors esp32_ble_tracker / rp2_ble_tracker: a one-shot scan
+  // (continuous: false) stops after its duration; restart it from a lambda
+  // with `id(my_tracker).start_scan();`. Set scan_continuous_ via
+  // set_scan_continuous() first to change the mode.
+  void start_scan();
+  void stop_scan();
+
   // ---- ble_device_base::BLEHub contract ----
   void register_listener(ble_device_base::ESPBTDeviceListener *listener) {
     this->dispatcher_.register_listener(listener);
@@ -222,10 +229,10 @@ class ESP32BLETracker : public Component {
   /// whatever scan_parameters configured (scan_mode_switch = false).
   bool request_scan_mode(bool active) { return false; }
 
-  // On host the scan is always-on once started, so RUNNING is reported; listeners
-  // are notified at setup.
+  // RUNNING while a scanner backend worker is up, IDLE after a one-shot scan
+  // ends (or a stop_scan()); listeners are notified on every transition.
   void add_scanner_state_listener(BLEScannerStateListener *l) { this->scanner_state_listeners_.push_back(l); }
-  ScannerState get_scanner_state() const { return ScannerState::RUNNING; }
+  ScannerState get_scanner_state() const { return this->scanner_state_; }
   bool get_scan_active() const { return this->scan_active_; }
 
   // Register a GATT client so the tracker delivers scan results to it and
@@ -258,6 +265,12 @@ class ESP32BLETracker : public Component {
   void try_promote_discovered_clients_();
   void read_adapter_mac_();
   void enqueue_frame_(const AdvFrame &frame);
+
+  // Scan lifecycle (all called on the main loop).
+  void start_scan_();
+  void stop_scan_();
+  void fire_scan_end_();
+  void set_scanner_state_(ScannerState state);
 
   // raw-HCI backend (opt-in)
   void scanner_thread_main_();
@@ -292,6 +305,10 @@ class ESP32BLETracker : public Component {
   std::thread scanner_thread_;
   std::atomic<bool> stop_thread_{false};
   std::atomic<bool> scan_running_{false};
+  // Set by the worker when it returns (stop honored, backend failure); the
+  // main loop reaps the thread and reports IDLE.
+  std::atomic<bool> thread_exited_{false};
+  ScannerState scanner_state_{ScannerState::IDLE};
   int hci_fd_{-1};
   int hci_dev_id_{-1};
 
