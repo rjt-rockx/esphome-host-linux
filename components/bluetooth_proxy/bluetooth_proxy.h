@@ -119,7 +119,7 @@ class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
   void flush_pending_advertisements_() {
     if (this->response_.advertisements_len == 0)
       return;
-    this->api_connection_->send_message(this->response_);
+    (void) this->api_connection_->send_message(this->response_);
     this->response_.advertisements_len = 0;
   }
   void log_advertisement_flush_();

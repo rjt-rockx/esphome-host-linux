@@ -11,6 +11,8 @@ compile path for setups that don't need it.
 """
 
 import esphome.config_validation as cv
+from esphome import final_validate as fv
+from esphome.core import CORE
 
 CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
@@ -20,3 +22,9 @@ CONFIG_SCHEMA = cv.Schema({})
 
 async def to_code(_config):
     pass
+
+
+# When this module is imported (because linux_compat: is in the config), also
+# install a process-wide final-validate hook used by configs that forget the
+# block: we cannot catch "mcp without linux_compat" from inside linux_compat
+# itself, so the hook lives on a commonly-loaded sibling — see linux_gpio.

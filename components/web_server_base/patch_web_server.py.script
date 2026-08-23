@@ -136,6 +136,68 @@ def _patch_host_ip_address(path: Path) -> None:
     path.write_text(src)
 
 
+def _patch_spi_component_final(path: Path) -> None:
+    """ESPHome 2026.8 marked SPIComponent as final; our LinuxSPIComponent must
+    subclass it to install a LinuxSPIBus. Drop final in the host build copy."""
+    if not path.exists():
+        return
+    src = path.read_text()
+    marker = "// PI_HOST_SPI_NOT_FINAL"
+    if marker in src:
+        return
+    needle = "class SPIComponent final : public Component {"
+    if needle not in src:
+        return
+    path.write_text(
+        src.replace(needle, f"class SPIComponent : public Component {{  {marker}", 1)
+    )
+
+
+def _patch_seesaw_dump_summary(path: Path) -> None:
+    """ssieb/seesaw still overrides dump_summary() returning std::string; ESPHome
+    2026.x changed GPIOPin::dump_summary to write into a caller buffer."""
+    if not path.exists():
+        return
+    src = path.read_text()
+    marker = "// PI_HOST_PATCHED_SEESAW_DUMP"
+    if marker in src:
+        return
+    old = "  std::string dump_summary() const override;"
+    if old not in src:
+        return
+    # Prefer matching the base signature; a trivial implementation is enough
+    # for logging. Replace the declaration; the .cpp definition is patched next.
+    path.write_text(
+        src.replace(
+            old,
+            f"  size_t dump_summary(char *buffer, size_t len) const override;  {marker}",
+            1,
+        )
+    )
+
+
+def _patch_seesaw_dump_summary_cpp(path: Path) -> None:
+    if not path.exists():
+        return
+    src = path.read_text()
+    marker = "// PI_HOST_PATCHED_SEESAW_DUMP_CPP"
+    if marker in src:
+        return
+    needle = (
+        "std::string SeesawGPIOPin::dump_summary() const {\n"
+        "  return str_sprintf(\"%u via SeeSaw\", this->pin_);\n"
+        "}"
+    )
+    if needle not in src:
+        return
+    repl = (
+        f"size_t SeesawGPIOPin::dump_summary(char *buffer, size_t len) const {{  {marker}\n"
+        "  return snprintf(buffer, len, \"%u via SeeSaw\", this->pin_);\n"
+        "}"
+    )
+    path.write_text(src.replace(needle, repl, 1))
+
+
 def _patch_seesaw_readbuf(path: Path) -> None:
     """Adafruit Seesaw firmware requires >=250us between the register-address
     write and the subsequent read on the same transaction. On Arduino the Wire
@@ -177,7 +239,10 @@ def _patch_all(_target, _source, _env):
     _ensure_lwip_stubs(project_dir)
     _ensure_esp_idf_version_stub(project_dir)
     _patch_host_ip_address(components_root / "network" / "ip_address.h")
+    _patch_spi_component_final(components_root / "spi" / "spi.h")
     _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
+    _patch_seesaw_dump_summary(components_root / "seesaw" / "seesaw.h")
+    _patch_seesaw_dump_summary_cpp(components_root / "seesaw" / "seesaw.cpp")
 
     # Expand the USE_ESP32 guard to also accept USE_HOST in the BLE consumer
     # components, so stock ESPHome BLE listeners compile against our host-side
@@ -280,6 +345,26 @@ def _patch_all(_target, _source, _env):
             (
                 "#ifdef USE_ESP32\n  this->base_->add_handler(&this->events_);\n#endif",
                 "#if defined(USE_ESP32) || defined(USE_HOST)\n  this->base_->add_handler(&this->events_);\n#endif",
+            ),
+            (
+                "#ifdef USE_ESP32\n"
+                "  // ESP32 (Arduino and ESP-IDF) uses the web_server_idf backend.\n"
+                "  optional<std::string> value = request->get_header(name);\n"
+                "  return value.has_value() ? std::move(*value) : std::string();\n"
+                "#else\n"
+                "  // ESP8266, RP2040 and LibreTiny use the Arduino ESPAsyncWebServer backend.\n"
+                "  const AsyncWebHeader *header = request->getHeader(name);\n"
+                "  return header != nullptr ? std::string(header->value().c_str()) : std::string();\n"
+                "#endif",
+                "#if defined(USE_ESP32) || defined(USE_HOST)\n"
+                "  // ESP32 and host use the web_server_idf / host AsyncWebServer shim.\n"
+                "  optional<std::string> value = request->get_header(name);\n"
+                "  return value.has_value() ? std::move(*value) : std::string();\n"
+                "#else\n"
+                "  // ESP8266, RP2040 and LibreTiny use the Arduino ESPAsyncWebServer backend.\n"
+                "  const AsyncWebHeader *header = request->getHeader(name);\n"
+                "  return header != nullptr ? std::string(header->value().c_str()) : std::string();\n"
+                "#endif",
             ),
         ],
     )

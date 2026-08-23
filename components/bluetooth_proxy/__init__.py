@@ -68,6 +68,10 @@ async def to_code(config):
     cg.add_define("BLUETOOTH_PROXY_MAX_CONNECTIONS", max(len(connections), 1))
     cg.add_define("BLUETOOTH_PROXY_ADVERTISEMENT_BATCH_SIZE", 16)
 
+    if connections:
+        # Gates the connection/GATT half of the API protobuf surface (2026.8+).
+        cg.add_define("USE_BLUETOOTH_PROXY_CONNECTIONS")
+
     for connection_conf in connections:
         connection_var = cg.new_Pvariable(connection_conf[CONF_ID])
         await cg.register_component(connection_var, connection_conf)

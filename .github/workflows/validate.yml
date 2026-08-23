@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install --upgrade pip
-      - run: pip install esphome
+      - run: pip install "esphome==2026.8.0"
       - name: Validate examples + valid/invalid fixtures
         run: python3 tests/config/run.py
 
@@ -38,7 +38,7 @@ jobs:
             liblgpio-dev libgpiod-dev libmosquitto-dev libsystemd-dev libmbedtls-dev build-essential \
             python3-dbusmock python3-dbus python3-gi python3-pytest dbus
       - name: Install esphome (isolated; invoked as a subprocess by the harness)
-        run: pipx install esphome
+        run: pipx install "esphome==2026.8.0"
       - name: Run integration tests under the system python3
         # The harness imports dbusmock (apt, system python3) and spawns a private
         # system bus; sd-bus in the compiled binary honors DBUS_SYSTEM_BUS_ADDRESS.
@@ -61,7 +61,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y liblgpio-dev libgpiod-dev libmosquitto-dev libsystemd-dev libmbedtls-dev build-essential
       - run: pip install --upgrade pip
-      - run: pip install esphome
+      - run: pip install "esphome==2026.8.0"
       - name: Compile each example for host target
         run: |
           set -e

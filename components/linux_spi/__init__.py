@@ -1,8 +1,11 @@
+from pathlib import Path
+
 import esphome.codegen as cg
 from esphome.components import spi as _upstream_spi
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
 from esphome.core import CORE, CoroPriority, coroutine_with_priority
+from esphome.helpers import copy_file_if_changed
 
 CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
@@ -65,6 +68,21 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
+def _ensure_host_patch_script():
+    """Register the shared host-patch pre-script (drops SPIComponent final, etc.)."""
+    script_src = (
+        Path(__file__).parent.parent / "web_server_base" / "patch_web_server.py.script"
+    )
+    if not script_src.exists():
+        return
+    script_dst = CORE.relative_build_path("patch_web_server.py")
+    copy_file_if_changed(script_src, script_dst)
+    existing = CORE.platformio_options.get("extra_scripts", []) or []
+    if "pre:patch_web_server.py" in existing:
+        return
+    CORE.add_platformio_option("extra_scripts", ["pre:patch_web_server.py"])
+
+
 @coroutine_with_priority(CoroPriority.BUS)
 async def to_code(config):
     cg.add_define("USE_SPI")
@@ -72,3 +90,5 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     cg.add(var.set_device(config[CONF_DEVICE]))
+    if CORE.is_host:
+        _ensure_host_patch_script()

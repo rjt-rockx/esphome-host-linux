@@ -2,35 +2,45 @@
 
 ESPHome external components that fill in the stubbed hardware HAL of ESPHome's `host` platform with Linux kernel interfaces, so the existing sensor and network catalog runs natively on a Raspberry Pi (or any Linux SBC).
 
+Aligned with **ESPHome 2026.8.x**. Requires ESPHome ≥ 2026.8.0.
+
 ## Why
 
-ESPHome's `host` platform compiles configs to a native Linux binary but stubs out GPIO, I2C, SPI, UART, networking, and BLE. Roughly 300 sensor and display drivers are written against the platform-agnostic HAL (`I2CBus`, `SPIDelegate`, `InternalGPIOPin`, `UARTComponent`) and would Just Work if those surfaces were backed by Linux char devices. This project provides those backings, plus host shims for `web_server`, `mqtt`, and `esp32_ble_tracker` so the upstream components run unmodified.
+ESPHome's `host` platform compiles configs to a native Linux binary but stubs out GPIO, SPI, 1-Wire, CAN, and BLE. Roughly 300 sensor and display drivers are written against the platform-agnostic HAL and would Just Work if those surfaces were backed by Linux char devices. This project provides those backings, plus host shims for `web_server` and `mqtt`, and a BlueZ/HCI `esp32_ble_tracker` that registers as the host `BLEHub` so stock 2026.8 BLE sensors work unmodified.
 
-## What works
+## What upstream now covers (do not shadow)
 
-- **`linux_gpio`** -- GPIO via the kernel character-device v2 ABI (`<linux/gpio.h>`, **no external library**). Input, output, internal pulls, and edge interrupts. Per-pin `chip:` selects the gpiochip (defaults to `/dev/gpiochip0`); optional `debounce_us:` enables kernel-side debounce.
-- **`linux_i2c`** -- *(deprecated)* I2C via `/dev/i2c-N` ioctls. ESPHome **2026.6.0** added native host I2C upstream ([#14489](https://github.com/esphome/esphome/pull/14489)) -- prefer `i2c: { device: /dev/i2c-N }`. `linux_i2c` still works and emits a deprecation warning at build time; stock `i2c:`-based sensors (BME280, etc.) work either way.
-- **`linux_spi`** -- SPI via `/dev/spidev*` ioctls. Stock `spi:`-based sensors work (MAX31865, etc.). Upstream `spi:` has no host support, so this component is the only path.
-- **`socketcan`** -- CAN bus via the kernel SocketCAN API (`<linux/can.h>`, no external library). A `canbus:` platform. Bring the interface up first with `ip link set canX up type can bitrate N` (the bitrate isn't settable from userspace); the compiled binary needs `cap_net_raw`.
-- **`linux_sysfs_sensor`** -- publish any numeric sysfs attribute (SoC temperature, hwmon volts, IIO ADC) as a `sensor:` with an explicit `path:` + `scale:`. No auto-discovery -- `hwmonN`/`iio:deviceN` indices aren't stable across boots, so pin the exact path (check `cat /sys/class/hwmon/hwmon*/name` first).
-- **`linux_w1`** -- 1-Wire via kernel `/sys/bus/w1/`. DS18B20 and friends.
-- **`linux_time`** -- expose the kernel wall clock as a `time:` platform.
-- **UART** -- ESPHome's upstream `uart:` already handles `port: /dev/ttyXXX` on host.
-- **`web_server`** -- upstream component runs unmodified; we ship a `web_server_base` shadow that provides an `AsyncWebServer` shim over POSIX sockets.
-- **`mqtt`** -- upstream component runs unmodified; the host backend wraps libmosquitto.
-- **`esp32_ble_tracker`** -- shadowed for host; backed by a Linux HCI raw socket scanner. Stock `ble_presence` / `ble_rssi` sensors work.
+| Area | Since | Upstream |
+|---|---|---|
+| **I2C** | 2026.6.0 (#14489) | Stock `i2c: { device: /dev/i2c-N }` — `linux_i2c` removed from this repo |
+| **UART** | earlier | Stock `uart: { port: /dev/tty… }` |
+| **Time** | earlier | Stock `time: { platform: host }` — prefer this over any local clock shim |
+| **BLE sensor platforms** | 2026.8.0 (#17150+) | Stock `ble_presence` / `ble_rssi` / BTHome / Xiaomi / … bind via `ble_hub_id` to any `BLEHub` — we only supply the Linux hub |
+| **ccache for host** | 2026.8.0 (#17728) | Automatic when `ccache` is on `PATH` |
 
-Tested on Pi 5 (Debian 13 trixie, kernel 6.12). CI also compiles every example on plain ubuntu-latest.
+## What this repo still owns (Linux-specific HAL)
+
+- **`linux_gpio`** — GPIO via the kernel character-device v2 ABI (`<linux/gpio.h>`, **no external library**). Input, output, internal pulls, and edge interrupts. Per-pin `chip:` selects the gpiochip (defaults to `/dev/gpiochip0`); optional `debounce_us:` enables kernel-side debounce.
+- **`linux_spi`** — SPI via `/dev/spidev*` ioctls. Upstream `spi:` has no host support.
+- **`socketcan`** — CAN via the kernel SocketCAN API. Bring the interface up first (`ip link set canX up type can bitrate N`); binary needs `cap_net_raw`.
+- **`linux_sysfs_sensor`** — publish any numeric sysfs attribute as a `sensor:` (`path:` + `scale:`).
+- **`linux_w1`** — 1-Wire via kernel `/sys/bus/w1/`.
+- **`linux_compat`** — opt-in linker shims (e.g. MCP23xxx vtable instantiations on host).
+- **`web_server_base`** — AsyncWebServer shim over POSIX sockets so stock `web_server:` runs on host (auth setters aligned with 2026.8 `#18237`).
+- **`mqtt`** — host backend wrapping libmosquitto.
+- **`esp32_ble` / `esp32_ble_tracker` / `esp32_ble_client` / `esp32_ble_server` / `esp32_ble_beacon` / `ble_client` / `bluetooth_proxy` / `bthome_advertiser`** — Linux BlueZ/HCI HAL. Upstream 2026.8's platform-neutral BLE layer still has **no host tracker** (hubs: esp32, bk72xx, ln882x, rp2 only). Our tracker registers as the host `BLEHub` so stock advertisement sensors compile and run.
+
+Tested on Pi 5 (Debian 13 trixie, kernel 6.12). CI compiles every example on plain ubuntu-latest against ESPHome 2026.8.
 
 ## Requirements
 
 Pi OS Bookworm, Debian 12, or any distro with the same toolchain. The `scripts/pi-bootstrap.sh` script handles the lot:
 
-- `libmosquitto-dev`, `bluez`, `libcap2-bin`, `build-essential` (no lgpio needed -- `linux_gpio` talks to the kernel GPIO chardev directly)
+- `libmosquitto-dev`, `bluez`, `libcap2-bin`, `build-essential` (no lgpio needed — `linux_gpio` talks to the kernel GPIO chardev directly)
 - User in the `gpio`, `i2c`, `spi`, `dialout` groups
-- ESPHome installed in a venv
+- ESPHome ≥ 2026.8.0 installed in a venv
 
-For BLE, the compiled binary needs `cap_net_admin,cap_net_raw`. After every `esphome compile`:
+For BLE, the compiled binary needs `cap_net_admin,cap_net_raw` when using the raw HCI backend. After every `esphome compile`:
 
 ```bash
 scripts/pi-bless-binary.sh .esphome/build/<name>/.pioenvs/<name>/program
@@ -74,6 +84,27 @@ switch:
     pin: 27
 ```
 
+I2C (stock upstream since 2026.6):
+
+```yaml
+i2c:
+  device: /dev/i2c-1
+  scan: true
+```
+
+BLE (stock sensors + our Linux hub):
+
+```yaml
+esp32_ble_tracker:
+  hci_device: hci0
+
+binary_sensor:
+  - platform: ble_presence
+    mac_address: AA:BB:CC:DD:EE:FF
+```
+
+Explicit `esp32_ble_id:` on sensors is renamed to `ble_hub_id:` in 2026.8 (warns until 2027.2.0). Most configs never set it.
+
 See `examples/` for one runnable file per component.
 
 ## Pin numbering
@@ -97,7 +128,7 @@ make clean
 make help
 ```
 
-`make validate` runs locally on macOS (no Pi needed) and is the fastest feedback loop.
+`make validate` runs locally (no Pi needed) and is the fastest feedback loop.
 
 The repo and scripts are still named `pi-*` because the inner-loop tooling targets Pi conventions (`pi-bootstrap.sh`, `pi-info.sh`, `PI=user@host`). The components themselves are named `linux_*` because the implementations are Linux-generic.
 

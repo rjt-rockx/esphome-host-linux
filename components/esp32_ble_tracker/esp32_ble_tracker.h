@@ -6,6 +6,8 @@
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 
+#include "esphome/components/ble_device_base/ble_device.h"
+#include "esphome/components/ble_device_base/ble_hub.h"
 #include "esphome/components/esp32_ble/ble_uuid.h"
 
 #include <atomic>
@@ -143,6 +145,8 @@ class ESPBTDevice {
   void set_ad_flag(uint8_t f) { this->ad_flag_ = f; }
   void add_tx_power(int8_t p) { this->tx_powers_.push_back(p); }
 
+  // Deprecated in ESPHome 2026.8 (#18092); prefer address_str_to().
+  ESPDEPRECATED("Use address_str_to() instead. Removed in 2027.2.0.", "2026.8.0")
   std::string address_str() const;
   // Format the MAC into a caller-provided buffer (no heap alloc), returning the
   // buffer pointer.
@@ -305,6 +309,26 @@ class ESP32BLETracker : public Component {
     this->listeners_.push_back(listener);
   }
 
+  // ---- ble_device_base::BLEHub (platform-neutral tracker contract, 2026.8) ----
+  void register_listener(ble_device_base::ESPBTDeviceListener *listener) {
+    this->hub_listeners_.push_back(listener);
+  }
+  void set_raw_advertisement_callback(ble_device_base::RawAdvertisementCallback callback) {
+    this->raw_advertisement_callback_ = callback;
+  }
+  static constexpr ble_device_base::HubCapabilities get_capabilities() {
+    // GATT connections are owned by this repo's ble_client / bluetooth_proxy
+    // shadows, not the neutral bluetooth_connection backend — advertise gatt
+    // false so stock proxy does not assume Bluedroid/rp2 connection slots.
+    // scan_mode_switch is false: mode is set from YAML / setters, not runtime.
+    return {/* active_scan = */ true, /* merges_scan_response = */ true, /* gatt = */ false,
+            /* scan_mode_switch = */ false};
+  }
+  void get_adapter_mac(uint8_t out[MAC_ADDRESS_SIZE]);
+  bool scan_running() { return this->scan_running_; }
+  bool scan_active() { return this->scan_active_; }
+  bool request_scan_mode(bool /*active*/) { return false; }
+
   // On host the scan is always-on once started, so RUNNING is reported; listeners
   // are notified at setup.
   void add_scanner_state_listener(BLEScannerStateListener *l) { this->scanner_state_listeners_.push_back(l); }
@@ -323,6 +347,18 @@ class ESP32BLETracker : public Component {
   }
 
  protected:
+  struct QueuedScan {
+    ESPBTDevice local;
+    uint8_t mac[6]{};
+    int8_t rssi{0};
+    uint8_t addr_type{0};
+    std::vector<uint8_t> raw_ad;
+  };
+
+  void deliver_scan_(QueuedScan scan);
+  void deliver_device_(ESPBTDevice device);
+  std::vector<uint8_t> reconstruct_ad_(const ESPBTDevice &device) const;
+  void dispatch_hub_(const QueuedScan &scan);
   void try_promote_discovered_clients_();
 
   // raw-HCI backend (opt-in)
@@ -339,8 +375,6 @@ class ESP32BLETracker : public Component {
   static int on_interfaces_added_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
   static int on_properties_changed_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
 
-  void deliver_device_(ESPBTDevice device);
-
   std::string hci_device_name_{"hci0"};
   uint32_t scan_duration_s_{300};
   uint32_t scan_interval_ms_{320};
@@ -348,13 +382,17 @@ class ESP32BLETracker : public Component {
   bool scan_active_{true};
   bool scan_continuous_{true};
   bool use_hci_backend_{false};
+  bool scan_running_{false};
 
   std::vector<ESPBTDeviceListener *> listeners_;
+  std::vector<ble_device_base::ESPBTDeviceListener *> hub_listeners_;
+  ble_device_base::RawAdvertisementCallback raw_advertisement_callback_{};
   std::vector<BLEScannerStateListener *> scanner_state_listeners_;
   std::vector<ESPBTClient *> clients_;
   uint8_t state_version_{0};
   uint8_t last_state_version_{0};
   uint8_t app_id_counter_{0};
+  uint8_t adapter_mac_[MAC_ADDRESS_SIZE]{};
 
   std::thread scanner_thread_;
   std::atomic<bool> stop_thread_{false};
@@ -363,7 +401,7 @@ class ESP32BLETracker : public Component {
   int hci_dev_id_{-1};
 
   std::mutex queue_mu_;
-  std::deque<ESPBTDevice> queue_;
+  std::deque<QueuedScan> queue_;
   static constexpr size_t QUEUE_MAX = 128;
 };
 

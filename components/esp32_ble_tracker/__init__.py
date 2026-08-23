@@ -1,12 +1,18 @@
 """Host esp32_ble_tracker component.
 
 A Linux BLE-scanning implementation (BlueZ D-Bus or raw HCI socket) so that
-components like ble_presence and ble_rssi run on a Raspberry Pi without any
-ESP-IDF dependencies.
+stock ble_device_base consumers (ble_presence, ble_rssi, BTHome, Xiaomi, …)
+and this repo's GATT/proxy shadows run on a Raspberry Pi without ESP-IDF.
+
+ESPHome 2026.8 moved advertisement sensors onto the platform-neutral
+`ble_device_base` / `BLEHub` layer (#17150 et al.). Upstream still rejects
+`host` as a hub platform; this component registers as the in-tree host hub
+and implements the BLEHub contract on top of BlueZ/HCI.
 
 The YAML surface accepts the full set of keys for compatibility but only honors
-`scan_parameters.{duration,interval,window,active,continuous}` on host.
-Automation triggers are accepted but currently no-op.
+`scan_parameters.{duration,interval,window,active,continuous}` on host, plus
+host-only `hci_device` / `hci_backend`. Automation triggers are accepted but
+currently no-op.
 """
 
 from __future__ import annotations
@@ -15,7 +21,7 @@ from pathlib import Path
 
 from esphome import automation
 import esphome.codegen as cg
-from esphome.components import esp32_ble
+from esphome.components import ble_device_base, esp32_ble
 from esphome.components.esp32_ble import (
     bt_uuid,
     bt_uuid16_format,
@@ -42,7 +48,13 @@ from esphome.helpers import copy_file_if_changed
 
 CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = []
-AUTO_LOAD = ["esp32_ble"]
+AUTO_LOAD = ["ble_device_base", "esp32_ble"]
+
+# Register as the host BLEHub provider (2026.8 ble_device_base). Upstream's
+# _IN_TREE_HUB_PROVIDERS has no host arm and would reject BLE consumers; patch
+# that table so stock sensors bind through cv.use_id(BLEHub).
+ble_device_base.register_hub_provider("esp32_ble_tracker")
+ble_device_base._IN_TREE_HUB_PROVIDERS["host"] = "esp32_ble_tracker"
 
 CONF_ESP32_BLE_ID = "esp32_ble_id"
 CONF_SCAN_PARAMETERS = "scan_parameters"
@@ -52,7 +64,9 @@ CONF_HCI_DEVICE = "hci_device"
 CONF_HCI_BACKEND = "hci_backend"
 
 esp32_ble_tracker_ns = cg.esphome_ns.namespace("esp32_ble_tracker")
-ESP32BLETracker = esp32_ble_tracker_ns.class_("ESP32BLETracker", cg.Component)
+ESP32BLETracker = esp32_ble_tracker_ns.class_(
+    "ESP32BLETracker", ble_device_base.BLEHub, cg.Component
+)
 ESPBTDeviceListener = esp32_ble_tracker_ns.class_("ESPBTDeviceListener")
 ESPBTClient = esp32_ble_tracker_ns.class_("ESPBTClient", ESPBTDeviceListener)
 ESPBTDevice = esp32_ble_tracker_ns.class_("ESPBTDevice")
@@ -145,6 +159,8 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
+# Legacy schema for this repo's ble_client / bluetooth_proxy shadows. Stock
+# sensors use ble_device_base.BLE_DEVICE_SCHEMA (ble_hub_id) instead.
 ESP_BLE_DEVICE_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_ESP32_BLE_ID): cv.use_id(ESP32BLETracker),
@@ -166,6 +182,9 @@ async def to_code(config):
     cg.add(var.set_scan_active(params[CONF_ACTIVE]))
     cg.add(var.set_scan_continuous(params[CONF_CONTINUOUS]))
 
+    # Selects the BLEHub alias arm in ble_device_base/ble_hub_impl.h so stock
+    # sensors compile against this tracker on host.
+    cg.add_define("USE_ESP32_BLE_TRACKER")
     cg.add_define("USE_ESP32_BLE_DEVICE")
     cg.add_define("USE_ESP32_BLE_UUID")
     cg.add_global(esp32_ble_tracker_ns.using)
@@ -182,8 +201,7 @@ async def to_code(config):
 
 def _ensure_ble_patch_script():
     """Copy patch_web_server.py.script into the build dir and register it as a
-    pre-script (which also patches USE_ESP32 guards in ble_presence / ble_rssi to
-    accept USE_HOST). Idempotent: skips re-registering if already present."""
+    pre-script (web_server / mqtt host patches). Idempotent."""
     script_src = (
         Path(__file__).parent.parent
         / "web_server_base"

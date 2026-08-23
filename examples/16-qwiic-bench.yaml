@@ -35,7 +35,7 @@ web_server:
   version: 3
   include_internal: true
 
-linux_i2c:
+i2c:
   id: bus_a
   device: /dev/i2c-1
 
