@@ -8,6 +8,7 @@ validation with the replacement snippet.
 """
 
 import esphome.config_validation as cv
+from esphome.const import CONF_ID
 
 CODEOWNERS = ["@rjt-rockx"]
 
@@ -16,17 +17,21 @@ CONF_DEVICE = "device"
 
 def _removed(config):
     device = "/dev/i2c-1"
+    bus_id = "bus_a"
     if isinstance(config, dict):
         device = config.get(CONF_DEVICE, device)
+        # Reproduce the user's own bus ID in the snippets so references via
+        # i2c_id: really do stay valid after the mechanical rename.
+        bus_id = str(config.get(CONF_ID, bus_id))
     raise cv.Invalid(
         "linux_i2c was removed: ESPHome 2026.6.0 ships native host I2C "
         "(esphome/esphome#14489). Replace:\n"
         "  linux_i2c:\n"
-        "    id: bus_a\n"
+        f"    id: {bus_id}\n"
         f"    device: {device}\n"
         "with the upstream i2c component:\n"
         "  i2c:\n"
-        "    id: bus_a\n"
+        f"    id: {bus_id}\n"
         f"    device: {device}\n"
         "Device IDs referenced via i2c_id: stay the same. "
         "See https://esphome.io/components/i2c"
