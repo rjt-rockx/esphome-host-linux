@@ -135,3 +135,33 @@ def test_preexisting_random_device_addr_type_seeded(bluez, run_host):
     line = host.wait_for_log("Address Type:", timeout=10)
     assert line is not None, "device update never dispatched/logged"
     assert "RANDOM" in line, f"address type lost for pre-existing device: {line!r}"
+
+
+def test_deferred_stop_survives_hung_stopdiscovery(bluez, run_host):
+    # StopDiscovery hangs for 8s: the worker blocks inside it, but the main
+    # loop must keep running because the stop is reaped asynchronously (a
+    # synchronous join here used to stall everything). ble-oneshot's on_boot
+    # start_scan() at 8s lands inside the hang window, so it must be deferred
+    # (logged) BEFORE the stop completes, then honored at the reap.
+    import time
+
+    bluez.adapter().AddMethod("org.bluez.Adapter1", "StopDiscovery", "", "", "import time\ntime.sleep(8)")
+    host = run_host("ble-oneshot")
+    assert bluez.wait_for_call("StartDiscovery", timeout=20), "scan never started"
+
+    # Main-loop liveness during the hang: the 8s on_boot restart runs and is
+    # queued while the worker is still stuck in StopDiscovery.
+    assert host.wait_for_log("Scan start deferred", timeout=15), (
+        "main loop blocked during hung StopDiscovery; start_scan() never ran"
+    )
+    assert host.wait_for_log("Scan stopped", timeout=15), "hung stop never completed"
+    snap = host.snapshot()
+    i_deferred = next(i for i, ln in enumerate(snap) if "Scan start deferred" in ln)
+    i_stopped = next(i for i, ln in enumerate(snap) if "Scan stopped" in ln)
+    assert i_deferred < i_stopped, "start_scan() only ran after the stop completed (loop was blocked)"
+
+    # The queued restart is honored once the stop is reaped.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and len(bluez.calls("StartDiscovery")) < 2:
+        time.sleep(0.2)
+    assert len(bluez.calls("StartDiscovery")) >= 2, "queued restart never started the scan"

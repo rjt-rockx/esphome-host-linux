@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -241,21 +242,30 @@ void ESP32BLETracker::setup() {
 void ESP32BLETracker::start_scan() {
   if (this->scanner_state_ == ScannerState::STARTING || this->scanner_state_ == ScannerState::RUNNING)
     return;
+  if (this->scanner_state_ == ScannerState::STOPPING) {
+    // The previous worker is still winding down; joining it here could block.
+    // The reap in loop() restarts once the stop completes.
+    ESP_LOGD(TAG, "Scan start deferred until the stop in flight completes");
+    this->restart_after_stop_ = true;
+    return;
+  }
   this->start_scan_();
 }
 
 void ESP32BLETracker::stop_scan() {
   // Unlike core's trackers, the configured continuous mode is NOT latched off
-  // here: host stops are synchronous and loop() never auto-restarts an idle
-  // scanner, so the stop sticks on its own and a later start_scan() resumes
-  // in the configured mode.
+  // here: host stops never auto-restart from loop(), so the stop sticks on
+  // its own and a later start_scan() resumes in the configured mode.
+  this->restart_after_stop_ = false;  // cancel a restart queued behind a stop
   if (this->scanner_state_ != ScannerState::STARTING && this->scanner_state_ != ScannerState::RUNNING)
     return;
   this->stop_scan_();
 }
 
 void ESP32BLETracker::start_scan_() {
-  // Reap a previous worker; it has already been asked to stop.
+  // Only reachable from IDLE / FAILED (or setup), where the previous worker
+  // has already exited and been reaped by loop() — so this join, if any,
+  // returns immediately.
   this->stop_thread_ = true;
   if (this->scanner_thread_.joinable())
     this->scanner_thread_.join();
@@ -281,28 +291,21 @@ void ESP32BLETracker::start_scan_() {
   this->set_scanner_state_(ScannerState::STARTING);
 }
 
+// Request an asynchronous stop. No join here: the worker's shutdown path can
+// block for the D-Bus method timeout if bluetoothd hangs in StopDiscovery, and
+// joining would stall the whole main loop. The worker notices stop_thread_
+// within one poll interval (200 ms), sends StopDiscovery / scan-disable, and
+// exits; loop()'s reap branch then completes the stop — draining the queue
+// before on_scan_end, publishing IDLE before the trigger, and honoring a
+// restart requested meanwhile.
 void ESP32BLETracker::stop_scan_() {
-  const bool was_running = this->scan_running_.load(std::memory_order_relaxed);
+  // Whether the reap should fire on_scan_end: only when a scan was actually
+  // running, and not when the request came from inside an on_scan_end
+  // automation (the continuous period timer fires the trigger while the scan
+  // still runs) — that outer dispatch already represents this scan boundary.
+  this->pending_stop_fire_ = this->scan_running_.load(std::memory_order_relaxed) && !this->in_scan_end_;
   this->stop_thread_ = true;
-  // The worker notices within one poll interval (200 ms); join so the backend
-  // is fully stopped (StopDiscovery / scan-disable sent) before IDLE is
-  // reported.
-  if (this->scanner_thread_.joinable())
-    this->scanner_thread_.join();
-  this->thread_exited_ = false;
-  // Dispatch frames the worker enqueued between loop()'s drain and the join,
-  // so no advertisement is delivered after on_scan_end has fired.
-  this->drain_queue_(App.get_loop_component_start_time());
-  ESP_LOGD(TAG, "Scan stopped");
-  // Publish IDLE BEFORE the trigger so an on_scan_end automation can call
-  // start_scan() reentrantly (it would see RUNNING and refuse otherwise), and
-  // never touch the state afterwards so such a restart's STARTING survives.
-  this->set_scanner_state_(ScannerState::IDLE);
-  // A stop_scan() from inside an on_scan_end automation re-enters here (the
-  // continuous period timer fires the trigger while the scan still runs); the
-  // outer dispatch already represents this scan boundary, so don't fire again.
-  if (was_running && !this->in_scan_end_)
-    this->fire_scan_end_();
+  this->set_scanner_state_(ScannerState::STOPPING);
 }
 
 void ESP32BLETracker::fire_scan_end_() {
@@ -321,9 +324,11 @@ void ESP32BLETracker::set_scanner_state_(ScannerState state) {
 }
 
 void ESP32BLETracker::dump_config() {
+  uint8_t adapter_mac[MAC_ADDRESS_SIZE];
+  this->get_adapter_mac(adapter_mac);
   char mac[MAC_ADDRESS_PRETTY_BUFFER_SIZE];
-  std::snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X", this->adapter_mac_[0], this->adapter_mac_[1],
-                this->adapter_mac_[2], this->adapter_mac_[3], this->adapter_mac_[4], this->adapter_mac_[5]);
+  std::snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X", adapter_mac[0], adapter_mac[1], adapter_mac[2],
+                adapter_mac[3], adapter_mac[4], adapter_mac[5]);
   if (this->use_hci_backend_) {
     ESP_LOGCONFIG(TAG, "BLE Tracker (Linux raw HCI):");
     ESP_LOGCONFIG(TAG, "  HCI device: %s", this->hci_device_name_.c_str());
@@ -355,25 +360,42 @@ void ESP32BLETracker::loop() {
     this->set_scanner_state_(ScannerState::RUNNING);
   }
 
-  // Reconcile: the worker exited on its own. Reap it and report FAILED (not a
-  // requested stop) so listeners see the difference from a completed scan; a
-  // later start_scan() may retry. A scan that had been running still delivers
-  // what it collected and ends its period; a startup failure (no adapter,
-  // D-Bus unavailable, StartDiscovery rejected) never scanned, so no
-  // on_scan_end fires for it.
+  // Reap: the worker exited — because a stop was requested (STOPPING), or on
+  // its own (backend failed to start, or a fatal error killed a running
+  // scan). The join returns immediately: the worker has already exited, so
+  // this never blocks on a hung StopDiscovery (see stop_scan_()). Ordering
+  // guarantees: queue drained before on_scan_end; the terminal state (IDLE /
+  // FAILED) published before the trigger, so an on_scan_end automation may
+  // restart reentrantly and its STARTING is not clobbered afterwards. A
+  // startup failure never scanned, so no on_scan_end fires for it.
   if (this->thread_exited_.load(std::memory_order_relaxed) &&
-      (this->scanner_state_ == ScannerState::STARTING || this->scanner_state_ == ScannerState::RUNNING)) {
-    const bool ran = this->scanner_state_ == ScannerState::RUNNING;
+      (this->scanner_state_ == ScannerState::STARTING || this->scanner_state_ == ScannerState::RUNNING ||
+       this->scanner_state_ == ScannerState::STOPPING)) {
+    const ScannerState prev = this->scanner_state_;
     if (this->scanner_thread_.joinable())
       this->scanner_thread_.join();
     this->thread_exited_ = false;
     this->drain_queue_(now);
-    ESP_LOGW(TAG, "Scan worker exited %s; scanner FAILED", ran ? "mid-scan" : "during startup");
-    // FAILED before the trigger, so an on_scan_end automation may restart the
-    // scan reentrantly (and its STARTING is not clobbered afterwards).
-    this->set_scanner_state_(ScannerState::FAILED);
-    if (ran)
+    bool fire;
+    if (prev == ScannerState::STOPPING) {
+      ESP_LOGD(TAG, "Scan stopped");
+      fire = this->pending_stop_fire_;
+      this->set_scanner_state_(ScannerState::IDLE);
+    } else {
+      const bool ran = prev == ScannerState::RUNNING;
+      ESP_LOGW(TAG, "Scan worker exited %s; scanner FAILED", ran ? "mid-scan" : "during startup");
+      fire = ran;
+      this->set_scanner_state_(ScannerState::FAILED);
+    }
+    this->pending_stop_fire_ = false;
+    if (fire)
       this->fire_scan_end_();
+    // A start_scan() issued while the stop was still in flight; the public
+    // gate keeps this a no-op if the trigger above already restarted.
+    if (this->restart_after_stop_) {
+      this->restart_after_stop_ = false;
+      this->start_scan();
+    }
   }
 
   // Period timer, mirroring core's trackers: a continuous scan fires
@@ -443,32 +465,44 @@ void ESP32BLETracker::enqueue_frame_(const AdvFrame &frame) {
   App.wake_loop_threadsafe();
 }
 
+// Primary adapter-MAC source, called from setup() for BOTH backends: the
+// HCIGETDEVINFO ioctl is local and fast (no D-Bus round trip that could block
+// the main thread on a hung bluetoothd). Leaves the MAC zeroed when the
+// device name is not hciN or the ioctl fails; the D-Bus worker then fills it
+// late via read_adapter_mac_dbus_().
 void ESP32BLETracker::read_adapter_mac_() {
-  if (this->use_hci_backend_) {
-    int dev_id = -1;
-    if (this->hci_device_name_.size() > 3 && this->hci_device_name_.rfind("hci", 0) == 0)
-      dev_id = std::atoi(this->hci_device_name_.c_str() + 3);
-    if (dev_id < 0)
-      return;
-    int fd = socket(AF_BLUETOOTH_LOCAL, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI_LOCAL);
-    if (fd < 0)
-      return;
-    uint8_t info[HCI_DEV_INFO_SIZE]{};
-    // struct hci_dev_info begins with the dev_id the ioctl looks up.
-    uint16_t id = static_cast<uint16_t>(dev_id);
-    std::memcpy(info, &id, sizeof(id));
-    if (ioctl(fd, HCIGETDEVINFO_LOCAL, info) == 0) {
-      // Stored LSB first by the kernel; the contract wants printable order.
-      for (int i = 0; i < 6; i++)
-        this->adapter_mac_[i] = info[HCI_DEV_INFO_BDADDR_OFFSET + 5 - i];
-    }
-    ::close(fd);
+  int dev_id = -1;
+  if (this->hci_device_name_.size() > 3 && this->hci_device_name_.rfind("hci", 0) == 0)
+    dev_id = std::atoi(this->hci_device_name_.c_str() + 3);
+  if (dev_id < 0)
     return;
+  int fd = socket(AF_BLUETOOTH_LOCAL, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI_LOCAL);
+  if (fd < 0)
+    return;
+  uint8_t info[HCI_DEV_INFO_SIZE]{};
+  // struct hci_dev_info begins with the dev_id the ioctl looks up.
+  uint16_t id = static_cast<uint16_t>(dev_id);
+  std::memcpy(info, &id, sizeof(id));
+  if (ioctl(fd, HCIGETDEVINFO_LOCAL, info) == 0) {
+    std::lock_guard<std::mutex> g(this->adapter_mac_mu_);
+    // Stored LSB first by the kernel; the contract wants printable order.
+    for (int i = 0; i < 6; i++)
+      this->adapter_mac_[i] = info[HCI_DEV_INFO_BDADDR_OFFSET + 5 - i];
   }
+  ::close(fd);
+}
 
-  sd_bus *bus = nullptr;
-  if (sd_bus_open_system(&bus) < 0)
-    return;
+// D-Bus fallback, run on the scanner worker thread (a synchronous property
+// read may block for the D-Bus method timeout — never do that on the main
+// thread for cosmetic metadata). Skipped when the ioctl already resolved it.
+void ESP32BLETracker::read_adapter_mac_dbus_(sd_bus *bus) {
+  {
+    std::lock_guard<std::mutex> g(this->adapter_mac_mu_);
+    for (uint8_t b : this->adapter_mac_) {
+      if (b != 0)
+        return;  // already resolved
+    }
+  }
   std::string adapter_path = "/org/bluez/" + this->hci_device_name_;
   sd_bus_error err = SD_BUS_ERROR_NULL;
   char *address = nullptr;
@@ -477,13 +511,13 @@ void ESP32BLETracker::read_adapter_mac_() {
       address != nullptr) {
     uint8_t lsb[6];
     if (parse_bdaddr(address, lsb)) {
+      std::lock_guard<std::mutex> g(this->adapter_mac_mu_);
       for (int i = 0; i < 6; i++)
         this->adapter_mac_[i] = lsb[5 - i];
     }
   }
   free(address);
   sd_bus_error_free(&err);
-  sd_bus_unref(bus);
 }
 
 bool ESP32BLETracker::open_hci_() {
@@ -613,20 +647,77 @@ void ESP32BLETracker::handle_le_meta_event_(const uint8_t *evt, size_t len) {
   }
 }
 
+// Wait (bounded) for the Command Complete / Command Status event of `opcode`
+// and return true only when the controller reports success. The event mask
+// set in open_hci_() subscribes both event codes. Scanning is not yet enabled
+// while this runs, so discarding unrelated events loses nothing.
+bool ESP32BLETracker::wait_hci_cmd_status_(uint16_t opcode, uint32_t timeout_ms) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  uint8_t buf[1024];
+  while (std::chrono::steady_clock::now() < deadline && !this->stop_thread_.load()) {
+    pollfd pfd{this->hci_fd_, POLLIN, 0};
+    int pr = poll(&pfd, 1, 100);
+    if (pr < 0) {
+      if (errno == EINTR)
+        continue;
+      return false;
+    }
+    if (pr == 0)
+      continue;
+    if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+      return false;
+    ssize_t n = read(this->hci_fd_, buf, sizeof(buf));
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n <= 0)
+      return false;
+    if (n < 3 || buf[0] != HCI_EVENT_PKT)
+      continue;
+    const uint8_t evt = buf[1], plen = buf[2];
+    if (static_cast<size_t>(n) < 3u + plen)
+      continue;
+    const uint8_t *p = buf + 3;
+    if (evt == EVT_CMD_COMPLETE && plen >= 4) {
+      // num_hci_cmd_pkts(1) opcode(2, LE) status(1)
+      uint16_t got = static_cast<uint16_t>(p[1] | (p[2] << 8));
+      if (got == opcode)
+        return p[3] == 0x00;
+    } else if (evt == EVT_CMD_STATUS && plen >= 4) {
+      // status(1) num_hci_cmd_pkts(1) opcode(2, LE)
+      uint16_t got = static_cast<uint16_t>(p[2] | (p[3] << 8));
+      if (got == opcode)
+        return p[0] == 0x00;
+    }
+  }
+  return false;  // controller never answered — treat as failure
+}
+
 void ESP32BLETracker::scanner_thread_main_() {
+  // Bound for each controller command acknowledgment below.
+  static constexpr uint32_t HCI_CMD_TIMEOUT_MS = 1000;
   if (!this->open_hci_()) {
     return;
   }
-  // Stop any in-progress scan from a previous owner so set_scan_params succeeds.
+  // Stop any in-progress scan from a previous owner so set_scan_params
+  // succeeds. Best-effort: fails legitimately when no scan was active, so its
+  // completion status is not checked (the next wait skips its event by opcode).
   this->send_le_set_scan_enable_(false);
-  if (!this->send_le_set_scan_params_()) {
-    ESP_LOGW(TAG, "BLE scan disabled. Grant the binary HCI capabilities once: "
+  // Check each Command Complete status: a write can succeed while the
+  // controller rejects the command (e.g. adapter owned by another stack) —
+  // exiting without scan_running_ makes the reap report FAILED instead of a
+  // scan that "completed" having collected nothing.
+  if (!this->send_le_set_scan_params_() ||
+      !this->wait_hci_cmd_status_(hci_opcode(OGF_LE_CTL, OCF_LE_SET_SCAN_PARAMETERS), HCI_CMD_TIMEOUT_MS)) {
+    ESP_LOGW(TAG, "LE scan parameters rejected — BLE scan disabled. Is the adapter free (not held by "
+                  "bluetoothd)? Grant the binary HCI capabilities once: "
                   "sudo setcap 'cap_net_admin,cap_net_raw+eip' <program>");
     this->close_hci_();
     return;
   }
-  if (!this->send_le_set_scan_enable_(true)) {
-    ESP_LOGW(TAG, "BLE scan enable rejected. Grant the binary HCI capabilities once: "
+  if (!this->send_le_set_scan_enable_(true) ||
+      !this->wait_hci_cmd_status_(hci_opcode(OGF_LE_CTL, OCF_LE_SET_SCAN_ENABLE), HCI_CMD_TIMEOUT_MS)) {
+    ESP_LOGW(TAG, "LE scan enable rejected — BLE scan disabled. Is the adapter free (not held by "
+                  "bluetoothd)? Grant the binary HCI capabilities once: "
                   "sudo setcap 'cap_net_admin,cap_net_raw+eip' <program>");
     this->close_hci_();
     return;
@@ -648,11 +739,21 @@ void ESP32BLETracker::scanner_thread_main_() {
     }
     if (pr == 0)
       continue;
+    // Adapter unplugged / socket dead: without this check a zero-byte read
+    // would spin the loop at full CPU forever.
+    if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      ESP_LOGW(TAG, "HCI socket error (adapter gone?), stopping scan worker");
+      break;
+    }
     ssize_t n = read(this->hci_fd_, buf, sizeof(buf));
     if (n < 0) {
       if (errno == EINTR)
         continue;
       ESP_LOGW(TAG, "HCI read error: %s", std::strerror(errno));
+      break;
+    }
+    if (n == 0) {
+      ESP_LOGW(TAG, "HCI socket EOF, stopping scan worker");
       break;
     }
     if (n < 3)
@@ -970,6 +1071,9 @@ void ESP32BLETracker::dbus_scanner_thread_main_() {
   }
 
   std::string adapter_path = "/org/bluez/" + this->hci_device_name_;
+
+  // Late adapter-MAC fill when setup()'s local ioctl could not resolve it.
+  this->read_adapter_mac_dbus_(bus);
 
   // SetDiscoveryFilter: LE transport, keep duplicate adverts so we see the
   // advertisement firehose (otherwise BlueZ coalesces unchanged data).

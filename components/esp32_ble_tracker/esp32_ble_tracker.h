@@ -203,7 +203,10 @@ class ESP32BLETracker : public Component {
   // Mirrors esp32_ble_tracker / rp2_ble_tracker: a one-shot scan
   // (continuous: false) stops after its duration; restart it from a lambda
   // with `id(my_tracker).start_scan();`. Set scan_continuous_ via
-  // set_scan_continuous() first to change the mode.
+  // set_scan_continuous() first to change the mode. Stops complete
+  // asynchronously (STOPPING until loop() reaps the worker — a synchronous
+  // join could stall the main loop on a hung bluetoothd); a start_scan()
+  // during STOPPING is queued and honored at the reap.
   void start_scan();
   void stop_scan();
 
@@ -221,9 +224,14 @@ class ESP32BLETracker : public Component {
     // own BlueZ client rather than a ble_device_base backend.
     return {.active_scan = true, .merges_scan_response = true, .gatt = false, .scan_mode_switch = false};
   }
-  /// Adapter address in printable (MSB-first) order; all-zero when it could not
-  /// be read (no adapter, or no permission).
-  void get_adapter_mac(uint8_t out[MAC_ADDRESS_SIZE]) { std::memcpy(out, this->adapter_mac_, MAC_ADDRESS_SIZE); }
+  /// Adapter address in printable (MSB-first) order; all-zero when it has not
+  /// been resolved (yet). The fast local HCI ioctl fills it at setup; the
+  /// D-Bus worker fills it late when the ioctl could not (consumers read it
+  /// per request — API device_info — so a late fill is safe).
+  void get_adapter_mac(uint8_t out[MAC_ADDRESS_SIZE]) {
+    std::lock_guard<std::mutex> g(this->adapter_mac_mu_);
+    std::memcpy(out, this->adapter_mac_, MAC_ADDRESS_SIZE);
+  }
   bool scan_running() { return this->scan_running_.load(std::memory_order_relaxed); }
   bool scan_active() { return this->scan_active_; }
   /// Neither backend re-programs the scan type after start, so the mode is
@@ -280,6 +288,7 @@ class ESP32BLETracker : public Component {
   void close_hci_();
   bool send_le_set_scan_params_();
   bool send_le_set_scan_enable_(bool enable);
+  bool wait_hci_cmd_status_(uint16_t opcode, uint32_t timeout_ms);
   void handle_le_meta_event_(const uint8_t *evt, size_t len);
 
   // D-Bus / BlueZ backend (default)
@@ -290,6 +299,7 @@ class ESP32BLETracker : public Component {
   void record_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t addr_type);
   void lookup_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t &addr_type) const;
   void seed_addr_types_(::sd_bus *bus);
+  void read_adapter_mac_dbus_(::sd_bus *bus);
 
   std::string hci_device_name_{"hci0"};
   uint32_t scan_duration_s_{300};
@@ -298,6 +308,9 @@ class ESP32BLETracker : public Component {
   bool scan_active_{true};
   bool scan_continuous_{true};
   bool use_hci_backend_{false};
+  // Guarded: setup() fills it via the local HCI ioctl on the main thread, and
+  // the D-Bus worker may fill it later; get_adapter_mac() reads on demand.
+  std::mutex adapter_mac_mu_;
   uint8_t adapter_mac_[MAC_ADDRESS_SIZE]{};
 
   std::vector<BLEScannerStateListener *> scanner_state_listeners_;
@@ -311,13 +324,21 @@ class ESP32BLETracker : public Component {
   std::atomic<bool> stop_thread_{false};
   std::atomic<bool> scan_running_{false};
   // Set by the worker when it returns (stop honored, backend failure); the
-  // main loop reaps the thread and reports FAILED (or IDLE on request).
+  // main loop reaps the thread and completes the stop (IDLE) or reports
+  // FAILED. Stops are always reaped here, never joined synchronously from a
+  // stop request — see stop_scan_().
   std::atomic<bool> thread_exited_{false};
   ScannerState scanner_state_{ScannerState::IDLE};
   // True while dispatcher_.on_scan_end() runs: a stop_scan() called from
   // inside an on_scan_end automation must not fire the trigger a second time
   // for the same scan boundary. Main-loop only.
   bool in_scan_end_{false};
+  // Deferred-stop bookkeeping (main-loop only): whether the reap of a
+  // requested stop should fire on_scan_end (captured at the stop request,
+  // false when the request came from inside the on_scan_end trigger), and
+  // whether a start_scan() arrived while the stop was still in flight.
+  bool pending_stop_fire_{false};
+  bool restart_after_stop_{false};
   // Address types seen in InterfacesAdded, keyed by MAC packed into a u64:
   // PropertiesChanged updates rarely carry AddressType, so without this cache
   // every update would flip a random-address device back to public. Only
