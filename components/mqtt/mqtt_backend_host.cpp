@@ -2,6 +2,7 @@
 
 #if defined(USE_MQTT) && defined(USE_HOST)
 
+#include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
 #include <cstring>
@@ -173,6 +174,9 @@ void MQTTBackendHost::s_on_connect(::mosquitto *, void *userdata, int rc) {
     if (self->on_disconnect_)
       self->on_disconnect_(MQTTClientDisconnectReason::MQTT_NOT_AUTHORIZED);
   }
+  // Callbacks run on the libmosquitto network thread; the main loop may be
+  // asleep in select() until its next tick.
+  App.wake_loop_threadsafe();
 }
 
 void MQTTBackendHost::s_on_disconnect(::mosquitto *, void *userdata, int rc) {
@@ -180,6 +184,7 @@ void MQTTBackendHost::s_on_disconnect(::mosquitto *, void *userdata, int rc) {
   self->connected_ = false;
   if (self->on_disconnect_)
     self->on_disconnect_(translate_rc(rc));
+  App.wake_loop_threadsafe();
 }
 
 void MQTTBackendHost::s_on_subscribe(::mosquitto *, void *userdata, int mid, int qos_count, const int *granted_qos) {
@@ -187,18 +192,21 @@ void MQTTBackendHost::s_on_subscribe(::mosquitto *, void *userdata, int mid, int
   uint8_t qos = qos_count > 0 ? static_cast<uint8_t>(granted_qos[0]) : 0;
   if (self->on_subscribe_)
     self->on_subscribe_(static_cast<uint16_t>(mid), qos);
+  App.wake_loop_threadsafe();
 }
 
 void MQTTBackendHost::s_on_unsubscribe(::mosquitto *, void *userdata, int mid) {
   auto *self = static_cast<MQTTBackendHost *>(userdata);
   if (self->on_unsubscribe_)
     self->on_unsubscribe_(static_cast<uint16_t>(mid));
+  App.wake_loop_threadsafe();
 }
 
 void MQTTBackendHost::s_on_publish(::mosquitto *, void *userdata, int mid) {
   auto *self = static_cast<MQTTBackendHost *>(userdata);
   if (self->on_publish_)
     self->on_publish_(static_cast<uint16_t>(mid));
+  App.wake_loop_threadsafe();
 }
 
 void MQTTBackendHost::s_on_message(::mosquitto *, void *userdata, const ::mosquitto_message *msg) {
@@ -208,6 +216,7 @@ void MQTTBackendHost::s_on_message(::mosquitto *, void *userdata, const ::mosqui
   const char *payload = msg->payload ? static_cast<const char *>(msg->payload) : "";
   size_t len = static_cast<size_t>(msg->payloadlen);
   self->on_message_(msg->topic, payload, len, 0, len);
+  App.wake_loop_threadsafe();
 }
 
 }  // namespace esphome::mqtt

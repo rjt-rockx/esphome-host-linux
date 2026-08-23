@@ -16,6 +16,7 @@ and scale. To pin a hwmon chip reliably, check its name first
 import sys
 
 from esphome.components import sensor
+from esphome.components.host_patches import ensure_patch_script
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.core import CORE
@@ -74,6 +75,7 @@ CONFIG_SCHEMA = cv.All(
 
 
 async def to_code(config):
+    ensure_patch_script()
     var = await sensor.new_sensor(config)
     await cg.register_component(var, config)
     cg.add(var.set_path(config[CONF_PATH]))

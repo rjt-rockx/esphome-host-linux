@@ -161,8 +161,10 @@ class AsyncWebServerRequest {
 
 #ifdef USE_WEBSERVER_AUTH
   bool authenticate(const char *username, const char *password) const;
+  /// Compare the raw `Authorization: Basic` payload against a precomputed base64 hash.
+  bool authenticate(const char *basic_auth_hash) const;
   // NOLINTNEXTLINE(readability-identifier-naming)
-  void requestAuthentication(const char *realm = nullptr) const;
+  void requestAuthentication(const char *realm = nullptr, bool digest = false);
 #endif
 
   void redirect(const std::string &url);
@@ -323,7 +325,8 @@ class AsyncEventSourceResponse {
   friend class AsyncEventSource;
 
  public:
-  bool try_send_nodefer(const char *message, const char *event = nullptr, uint32_t id = 0, uint32_t reconnect = 0);
+  bool try_send_nodefer(const char *message, size_t message_len, const char *event = nullptr, uint32_t id = 0,
+                        uint32_t reconnect = 0);
   void deferrable_send_state(void *source, const char *event_type, message_generator_t *message_generator);
   void loop();
 
@@ -371,7 +374,8 @@ class AsyncEventSource : public AsyncWebHandler {
   // NOLINTNEXTLINE(readability-identifier-naming)
   void onDisconnect(std::function<void(AsyncEventSourceClient *)> &&cb) { this->on_disconnect_ = std::move(cb); }
 
-  void try_send_nodefer(const char *message, const char *event = nullptr, uint32_t id = 0, uint32_t reconnect = 0);
+  void try_send_nodefer(const char *message, size_t message_len, const char *event = nullptr, uint32_t id = 0,
+                        uint32_t reconnect = 0);
   void deferrable_send_state(void *source, const char *event_type, message_generator_t *message_generator);
   bool loop();
   bool empty() { return this->count() == 0; }

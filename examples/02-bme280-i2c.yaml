@@ -1,10 +1,7 @@
-# Phase 2 smoke test: linux_i2c + stock bme280 sensor.
+# Phase 2 smoke test: native host i2c + stock bme280 sensor.
 #
-# NOTE: linux_i2c is DEPRECATED. On ESPHome 2026.6.0+ prefer the native upstream
-# host I2C support (PR #14489):
-#   i2c:
-#     device: /dev/i2c-1
-# This example keeps linux_i2c so it also validates on older ESPHome.
+# Needs ESPHome 2026.6.0+, which added host I2C upstream (PR #14489). The
+# former linux_i2c component was removed in favour of it.
 #
 # Wiring (BCM numbering, default Pi I2C bus):
 #   - SDA: GPIO2 (header pin 3)
@@ -32,7 +29,7 @@ api:
 logger:
   level: DEBUG
 
-linux_i2c:
+i2c:
   id: bus_a
   device: /dev/i2c-1
   scan: true

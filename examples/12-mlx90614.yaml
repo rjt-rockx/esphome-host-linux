@@ -22,7 +22,7 @@ api:
 logger:
   level: DEBUG
 
-linux_i2c:
+i2c:
   id: bus_a
   device: /dev/i2c-1
 

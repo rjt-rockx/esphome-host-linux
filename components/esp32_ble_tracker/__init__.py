@@ -1,26 +1,25 @@
 """Host esp32_ble_tracker component.
 
-A Linux BLE-scanning implementation (BlueZ D-Bus or raw HCI socket) so that
-components like ble_presence and ble_rssi run on a Raspberry Pi without any
-ESP-IDF dependencies.
+A Linux BLE-scanning implementation (BlueZ D-Bus or raw HCI socket) that
+implements the platform-neutral ble_device_base BLEHub contract, so the stock
+BLE consumers (ble_presence, ble_rssi, ble_scanner, bthome_mithermometer,
+xiaomi_*, ...) bind to it through cv.use_id(BLEHub) with no host-specific code.
 
-The YAML surface accepts the full set of keys for compatibility but only honors
-`scan_parameters.{duration,interval,window,active,continuous}` on host.
-Automation triggers are accepted but currently no-op.
+The component keeps the esp32_ble_tracker name deliberately: that is the name
+core's BLEHub alias ladder (ble_device_base/ble_hub_impl.h) and the
+missing-tracker registry key on, so both work unmodified against this shadow.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from esphome import automation
 import esphome.codegen as cg
-from esphome.components import esp32_ble
-from esphome.components.esp32_ble import (
-    bt_uuid,
-    bt_uuid16_format,
-    bt_uuid32_format,
-    bt_uuid128_format,
+from esphome.components import ble_device_base
+from esphome.components.ble_device_base import automation as ble_automation
+from esphome.components.host_patches import ensure_patch_script
+from esphome.components.const import (
+    CONF_ON_SCAN_END,
+    CONF_SCAN_PARAMETERS,
+    CONF_WINDOW,
 )
 import esphome.config_validation as cv
 from esphome.const import (
@@ -29,80 +28,55 @@ from esphome.const import (
     CONF_DURATION,
     CONF_ID,
     CONF_INTERVAL,
-    CONF_MAC_ADDRESS,
     CONF_MANUFACTURER_ID,
     CONF_ON_BLE_ADVERTISE,
     CONF_ON_BLE_MANUFACTURER_DATA_ADVERTISE,
     CONF_ON_BLE_SERVICE_DATA_ADVERTISE,
     CONF_SERVICE_UUID,
-    CONF_TRIGGER_ID,
 )
 from esphome.core import CORE
-from esphome.helpers import copy_file_if_changed
+from esphome.types import ConfigType
 
 CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = []
-AUTO_LOAD = ["esp32_ble"]
+AUTO_LOAD = ["ble_device_base", "esp32_ble"]
+
+ble_device_base.register_hub_provider("esp32_ble_tracker")
 
 CONF_ESP32_BLE_ID = "esp32_ble_id"
-CONF_SCAN_PARAMETERS = "scan_parameters"
-CONF_WINDOW = "window"
-CONF_ON_SCAN_END = "on_scan_end"
 CONF_HCI_DEVICE = "hci_device"
 CONF_HCI_BACKEND = "hci_backend"
 
 esp32_ble_tracker_ns = cg.esphome_ns.namespace("esp32_ble_tracker")
-ESP32BLETracker = esp32_ble_tracker_ns.class_("ESP32BLETracker", cg.Component)
-ESPBTDeviceListener = esp32_ble_tracker_ns.class_("ESPBTDeviceListener")
-ESPBTClient = esp32_ble_tracker_ns.class_("ESPBTClient", ESPBTDeviceListener)
-ESPBTDevice = esp32_ble_tracker_ns.class_("ESPBTDevice")
-ESPBTDeviceConstRef = ESPBTDevice.operator("ref").operator("const")
-
-
-def as_hex(value):
-    return cg.RawExpression(f"0x{value}ULL")
-
-
-def as_hex_array(value):
-    value = value.replace("-", "")
-    cpp_array = [
-        f"0x{part}" for part in [value[i : i + 2] for i in range(0, len(value), 2)]
-    ]
-    return cg.RawExpression(f"(uint8_t*)(const uint8_t[16]){{{','.join(cpp_array)}}}")
-
-
-def as_reversed_hex_array(value):
-    value = value.replace("-", "")
-    cpp_array = [
-        f"0x{part}" for part in [value[i : i + 2] for i in range(0, len(value), 2)]
-    ]
-    return cg.RawExpression(
-        f"(uint8_t*)(const uint8_t[16]){{{','.join(reversed(cpp_array))}}}"
-    )
-
-
-def _validate_scan_parameters(config):
-    duration = config[CONF_DURATION]
-    interval = config[CONF_INTERVAL]
-    window = config[CONF_WINDOW]
-    if window > interval:
-        raise cv.Invalid(
-            f"Scan window ({window}) needs to be smaller than scan interval ({interval})"
-        )
-    if interval.total_milliseconds * 3 > duration.total_milliseconds:
-        raise cv.Invalid(
-            "Scan duration needs to be at least three times the scan interval to "
-            "cover all BLE channels."
-        )
-    return config
-
-
-# Trigger placeholder so advertisement-automation YAML validates. The schema is
-# accepted but the trigger is currently unused (no automation is emitted).
-ESPBTAdvertiseTrigger = esp32_ble_tracker_ns.class_(
-    "ESPBTAdvertiseTrigger", automation.Trigger.template(ESPBTDeviceConstRef)
+ESP32BLETracker = esp32_ble_tracker_ns.class_(
+    "ESP32BLETracker", ble_device_base.BLEHub, cg.Component
 )
+ESPBTClient = esp32_ble_tracker_ns.class_("ESPBTClient")
 
+# The advertisement types are the neutral ones now; re-exported so the repo's
+# own GATT family keeps importing them from here.
+ESPBTDeviceListener = ble_device_base.ESPBTDeviceListener
+ESPBTDeviceConstRef = ble_automation.ESPBTDeviceConstRef
+
+# UUID validation/codegen helpers live in ble_device_base; re-exported under the
+# historical names the repo's ble_client platforms use.
+bt_uuid = ble_device_base.bt_uuid
+bt_uuid16_format = ble_device_base.BT_UUID16_FORMAT
+bt_uuid32_format = ble_device_base.BT_UUID32_FORMAT
+bt_uuid128_format = ble_device_base.BT_UUID128_FORMAT
+as_hex = ble_device_base.as_hex
+as_hex_array = ble_device_base.as_hex_array
+as_reversed_hex_array = ble_device_base.as_reversed_hex_array
+
+ESPBTAdvertiseTrigger = ble_automation.ESPBTAdvertiseTrigger
+BLEServiceDataAdvertiseTrigger = ble_automation.BLEServiceDataAdvertiseTrigger
+BLEManufacturerDataAdvertiseTrigger = ble_automation.BLEManufacturerDataAdvertiseTrigger
+BLEEndOfScanTrigger = ble_automation.BLEEndOfScanTrigger
+
+# Listeners registered through the repo's own helpers (GATT clients, the
+# bluetooth_proxy) share the codegen-sized StaticVector with the neutral
+# register_ble_device(), so they must claim a slot the same way.
+_count_listener = cg.slot_counter(ble_device_base.LISTENER_COUNT_DEFINE)
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -112,39 +86,33 @@ CONFIG_SCHEMA = cv.Schema(
         # hci_backend: true for the raw-HCI scanner, which needs an adapter not
         # owned by bluetoothd but yields byte-exact advertisements.
         cv.Optional(CONF_HCI_BACKEND, default=False): cv.boolean,
-        cv.Optional(CONF_SCAN_PARAMETERS, default={}): cv.All(
-            cv.Schema(
-                {
-                    cv.Optional(
-                        CONF_DURATION, default="5min"
-                    ): cv.positive_time_period_seconds,
-                    cv.Optional(
-                        CONF_INTERVAL, default="320ms"
-                    ): cv.positive_time_period_milliseconds,
-                    cv.Optional(
-                        CONF_WINDOW, default="30ms"
-                    ): cv.positive_time_period_milliseconds,
-                    cv.Optional(CONF_ACTIVE, default=True): cv.boolean,
-                    cv.Optional(CONF_CONTINUOUS, default=True): cv.boolean,
-                }
-            ),
-            _validate_scan_parameters,
+        cv.Optional(
+            CONF_SCAN_PARAMETERS, default={}
+        ): ble_device_base.scan_parameters_schema("320ms"),
+        cv.Optional(CONF_ON_BLE_ADVERTISE): ble_automation.advertise_trigger_schema(
+            ESPBTAdvertiseTrigger
         ),
-        cv.Optional(CONF_ON_BLE_ADVERTISE): automation.validate_automation(
-            {
-                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(ESPBTAdvertiseTrigger),
-                cv.Optional(CONF_MAC_ADDRESS): cv.ensure_list(cv.mac_address),
-            }
+        cv.Optional(
+            CONF_ON_BLE_SERVICE_DATA_ADVERTISE
+        ): ble_automation.uuid_trigger_schema(
+            BLEServiceDataAdvertiseTrigger,
+            {cv.Required(CONF_SERVICE_UUID): ble_device_base.bt_uuid},
         ),
-        cv.Optional(CONF_ON_BLE_SERVICE_DATA_ADVERTISE): cv.ensure_list(cv.Schema({})),
-        cv.Optional(CONF_ON_BLE_MANUFACTURER_DATA_ADVERTISE): cv.ensure_list(
-            cv.Schema({})
+        cv.Optional(
+            CONF_ON_BLE_MANUFACTURER_DATA_ADVERTISE
+        ): ble_automation.uuid_trigger_schema(
+            BLEManufacturerDataAdvertiseTrigger,
+            {cv.Required(CONF_MANUFACTURER_ID): ble_device_base.bt_uuid},
         ),
-        cv.Optional(CONF_ON_SCAN_END): cv.ensure_list(cv.Schema({})),
+        cv.Optional(CONF_ON_SCAN_END): ble_automation.scan_end_trigger_schema(
+            BLEEndOfScanTrigger
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
 
+# Binding schema for the repo's own GATT family (ble_client, bluetooth_proxy),
+# which still keys on esp32_ble_id rather than the neutral ble_hub_id.
 ESP_BLE_DEVICE_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_ESP32_BLE_ID): cv.use_id(ESP32BLETracker),
@@ -152,66 +120,67 @@ ESP_BLE_DEVICE_SCHEMA = cv.Schema(
 )
 
 
-async def to_code(config):
+async def to_code(config: ConfigType) -> None:
+    # Selects the BLEHub alias arm in ble_device_base/ble_hub_impl.h.
+    cg.add_define("USE_ESP32_BLE_TRACKER")
+    # Compiles the shared adv + scan-response merge: the raw-HCI backend sees
+    # advertisement and scan response as separate reports.
+    cg.add_define("USE_BLE_SCAN_RESPONSE_MERGER")
+
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
     cg.add(var.set_hci_device(config[CONF_HCI_DEVICE]))
     cg.add(var.set_use_hci_backend(config[CONF_HCI_BACKEND]))
 
-    params = config[CONF_SCAN_PARAMETERS]
-    cg.add(var.set_scan_duration(int(params[CONF_DURATION].total_seconds)))
-    cg.add(var.set_scan_interval_ms(int(params[CONF_INTERVAL].total_milliseconds)))
-    cg.add(var.set_scan_window_ms(int(params[CONF_WINDOW].total_milliseconds)))
-    cg.add(var.set_scan_active(params[CONF_ACTIVE]))
-    cg.add(var.set_scan_continuous(params[CONF_CONTINUOUS]))
+    scan = config[CONF_SCAN_PARAMETERS]
+    cg.add(var.set_scan_duration(int(scan[CONF_DURATION].total_seconds)))
+    cg.add(var.set_scan_interval_ms(int(scan[CONF_INTERVAL].total_milliseconds)))
+    cg.add(var.set_scan_window_ms(int(scan[CONF_WINDOW].total_milliseconds)))
+    cg.add(var.set_scan_active(scan[CONF_ACTIVE]))
+    cg.add(var.set_scan_continuous(scan[CONF_CONTINUOUS]))
 
-    cg.add_define("USE_ESP32_BLE_DEVICE")
-    cg.add_define("USE_ESP32_BLE_UUID")
+    for conf in config.get(CONF_ON_BLE_ADVERTISE, []):
+        await ble_automation.advertise_trigger_to_code(conf, var)
+
+    for trigger_key, uuid_key, setter_prefix in (
+        (CONF_ON_BLE_SERVICE_DATA_ADVERTISE, CONF_SERVICE_UUID, "set_service_uuid"),
+        (
+            CONF_ON_BLE_MANUFACTURER_DATA_ADVERTISE,
+            CONF_MANUFACTURER_ID,
+            "set_manufacturer_uuid",
+        ),
+    ):
+        for conf in config.get(trigger_key, []):
+            await ble_automation.uuid_trigger_to_code(
+                conf, var, uuid_key, setter_prefix
+            )
+
+    for conf in config.get(CONF_ON_SCAN_END, []):
+        await ble_automation.scan_end_trigger_to_code(conf, var)
+
     cg.add_global(esp32_ble_tracker_ns.using)
     if CORE.is_host:
         cg.add_build_flag("-pthread")
         # libsystemd provides sd-bus for the D-Bus backend. (The raw-HCI path
         # needs no extra libs.)
         cg.add_build_flag("-lsystemd")
-        # libmbedcrypto provides the AES-CCM used by advertisement parsers (e.g.
-        # xiaomi_ble) that decrypt payloads.
-        cg.add_build_flag("-lmbedcrypto")
-        _ensure_ble_patch_script()
-
-
-def _ensure_ble_patch_script():
-    """Copy patch_web_server.py.script into the build dir and register it as a
-    pre-script (which also patches USE_ESP32 guards in ble_presence / ble_rssi to
-    accept USE_HOST). Idempotent: skips re-registering if already present."""
-    script_src = (
-        Path(__file__).parent.parent
-        / "web_server_base"
-        / "patch_web_server.py.script"
-    )
-    if not script_src.exists():
-        return
-    script_dst = CORE.relative_build_path("patch_web_server.py")
-    copy_file_if_changed(script_src, script_dst)
-    existing = CORE.platformio_options.get("extra_scripts", []) or []
-    if "pre:patch_web_server.py" in existing:
-        return
-    CORE.add_platformio_option("extra_scripts", ["pre:patch_web_server.py"])
+        ensure_patch_script()
 
 
 async def register_ble_device(var, config):
     paren = await cg.get_variable(config[CONF_ESP32_BLE_ID])
     cg.add(paren.register_listener(var))
+    _count_listener()
     return var
 
 
 async def register_raw_ble_device(var, config):
-    paren = await cg.get_variable(config[CONF_ESP32_BLE_ID])
-    cg.add(paren.register_listener(var))
-    return var
+    return await register_ble_device(var, config)
 
 
 async def register_client(var, config):
     paren = await cg.get_variable(config[CONF_ESP32_BLE_ID])
     cg.add(paren.register_client(var))
+    _count_listener()
     return var

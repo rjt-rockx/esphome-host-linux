@@ -1,13 +1,15 @@
 #include "esp32_ble_tracker.h"
 
+#include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 
-#include <fcntl.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -29,12 +31,7 @@ namespace {
 constexpr int BTPROTO_HCI_LOCAL = 1;
 constexpr int HCI_CHANNEL_RAW_LOCAL = 0;
 
-constexpr uint16_t HCI_DEV_NONE_LOCAL = 0xffff;
-
-constexpr int HCIDEVUP_LOCAL = 0x400448c9;
-constexpr int HCIDEVDOWN_LOCAL = 0x400448ca;
-constexpr int HCIGETDEVLIST_LOCAL = 0x800448d2;
-constexpr int HCIGETDEVINFO_LOCAL = 0x800448d3;
+constexpr unsigned long HCIGETDEVINFO_LOCAL = 0x800448d3;
 
 constexpr uint8_t HCI_COMMAND_PKT = 0x01;
 constexpr uint8_t HCI_EVENT_PKT = 0x04;
@@ -44,26 +41,29 @@ constexpr uint8_t EVT_CMD_COMPLETE = 0x0e;
 constexpr uint8_t EVT_CMD_STATUS = 0x0f;
 
 constexpr uint8_t SUBEVT_LE_ADVERTISING_REPORT = 0x02;
-constexpr uint8_t SUBEVT_LE_EXTENDED_ADV_REPORT = 0x0d;
+
+// LE Advertising Report event types.
+constexpr uint8_t ADV_IND = 0x00;
+constexpr uint8_t ADV_SCAN_IND = 0x02;
+constexpr uint8_t SCAN_RSP = 0x04;
 
 constexpr uint16_t OCF_LE_SET_SCAN_PARAMETERS = 0x000b;
 constexpr uint16_t OCF_LE_SET_SCAN_ENABLE = 0x000c;
 constexpr uint16_t OGF_LE_CTL = 0x08;
 
-constexpr uint8_t AD_FLAGS = 0x01;
+// AD types emitted by the D-Bus re-encoder.
 constexpr uint8_t AD_INCOMPLETE_LIST_UUID16 = 0x02;
 constexpr uint8_t AD_COMPLETE_LIST_UUID16 = 0x03;
 constexpr uint8_t AD_INCOMPLETE_LIST_UUID32 = 0x04;
 constexpr uint8_t AD_COMPLETE_LIST_UUID32 = 0x05;
 constexpr uint8_t AD_INCOMPLETE_LIST_UUID128 = 0x06;
 constexpr uint8_t AD_COMPLETE_LIST_UUID128 = 0x07;
-constexpr uint8_t AD_SHORTENED_LOCAL_NAME = 0x08;
 constexpr uint8_t AD_COMPLETE_LOCAL_NAME = 0x09;
 constexpr uint8_t AD_TX_POWER_LEVEL = 0x0a;
+constexpr uint8_t AD_APPEARANCE = 0x19;
 constexpr uint8_t AD_SERVICE_DATA_UUID16 = 0x16;
 constexpr uint8_t AD_SERVICE_DATA_UUID32 = 0x20;
 constexpr uint8_t AD_SERVICE_DATA_UUID128 = 0x21;
-constexpr uint8_t AD_APPEARANCE = 0x19;
 constexpr uint8_t AD_MANUFACTURER_DATA = 0xff;
 
 struct __attribute__((packed)) sockaddr_hci_local {
@@ -85,6 +85,12 @@ struct hci_filter_local {
 constexpr int SOL_HCI_LOCAL = 0;
 constexpr int HCI_FILTER_LOCAL = 2;
 
+// Offset of bdaddr[6] inside `struct hci_dev_info` (uint16_t dev_id + char
+// name[8]); the ioctl fills the whole struct, so the request buffer must be
+// generously sized.
+constexpr size_t HCI_DEV_INFO_BDADDR_OFFSET = 10;
+constexpr size_t HCI_DEV_INFO_SIZE = 256;
+
 inline void hci_filter_set_ptype(int t, hci_filter_local *f) { f->type_mask |= (1u << (t & 0x1f)); }
 inline void hci_filter_set_event(int e, hci_filter_local *f) {
   if (e < 32) {
@@ -98,128 +104,81 @@ inline uint16_t hci_opcode(uint16_t ogf, uint16_t ocf) {
   return static_cast<uint16_t>((ogf << 10) | (ocf & 0x03ff));
 }
 
-void parse_ad_payload(const uint8_t *payload, uint8_t len, ESPBTDevice &device) {
-  size_t pos = 0;
-  while (pos + 1 < len) {
-    uint8_t field_len = payload[pos];
-    if (field_len == 0 || pos + 1 + field_len > len)
-      break;
-    uint8_t type = payload[pos + 1];
-    const uint8_t *data = payload + pos + 2;
-    uint8_t data_len = field_len - 1;
+// Parse "AA:BB:CC:DD:EE:FF" into controller order (LSB first).
+bool parse_bdaddr(const char *str, uint8_t out[6]) {
+  unsigned vals[6];
+  if (std::sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x", &vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5]) != 6)
+    return false;
+  for (int i = 0; i < 6; i++)
+    out[i] = static_cast<uint8_t>(vals[5 - i]);
+  return true;
+}
 
-    switch (type) {
-      case AD_FLAGS:
-        if (data_len > 0)
-          device.set_ad_flag(data[0]);
-        break;
-      case AD_INCOMPLETE_LIST_UUID16:
-      case AD_COMPLETE_LIST_UUID16:
-        for (size_t i = 0; i + 1 < data_len; i += 2) {
-          uint16_t u = static_cast<uint16_t>(data[i]) | (static_cast<uint16_t>(data[i + 1]) << 8);
-          device.add_service_uuid(ESPBTUUID::from_uint16(u));
-        }
-        break;
-      case AD_INCOMPLETE_LIST_UUID32:
-      case AD_COMPLETE_LIST_UUID32:
-        for (size_t i = 0; i + 3 < data_len; i += 4) {
-          uint32_t u = static_cast<uint32_t>(data[i]) | (static_cast<uint32_t>(data[i + 1]) << 8) |
-                       (static_cast<uint32_t>(data[i + 2]) << 16) | (static_cast<uint32_t>(data[i + 3]) << 24);
-          device.add_service_uuid(ESPBTUUID::from_uint32(u));
-        }
-        break;
-      case AD_INCOMPLETE_LIST_UUID128:
-      case AD_COMPLETE_LIST_UUID128:
-        for (size_t i = 0; i + 15 < data_len; i += 16) {
-          device.add_service_uuid(ESPBTUUID::from_raw(data + i));
-        }
-        break;
-      case AD_SHORTENED_LOCAL_NAME:
-      case AD_COMPLETE_LOCAL_NAME:
-        device.set_name(std::string(reinterpret_cast<const char *>(data), data_len));
-        break;
-      case AD_TX_POWER_LEVEL:
-        if (data_len > 0)
-          device.add_tx_power(static_cast<int8_t>(data[0]));
-        break;
-      case AD_APPEARANCE:
-        if (data_len >= 2)
-          device.set_appearance(static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8));
-        break;
-      case AD_SERVICE_DATA_UUID16: {
-        if (data_len >= 2) {
-          ServiceData sd;
-          uint16_t u = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
-          sd.uuid = ESPBTUUID::from_uint16(u);
-          sd.data.assign(data + 2, data + data_len);
-          device.add_service_data(std::move(sd));
-        }
-        break;
-      }
-      case AD_SERVICE_DATA_UUID32: {
-        if (data_len >= 4) {
-          ServiceData sd;
-          uint32_t u = static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8) |
-                       (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
-          sd.uuid = ESPBTUUID::from_uint32(u);
-          sd.data.assign(data + 4, data + data_len);
-          device.add_service_data(std::move(sd));
-        }
-        break;
-      }
-      case AD_SERVICE_DATA_UUID128: {
-        if (data_len >= 16) {
-          ServiceData sd;
-          sd.uuid = ESPBTUUID::from_raw(data);
-          sd.data.assign(data + 16, data + data_len);
-          device.add_service_data(std::move(sd));
-        }
-        break;
-      }
-      case AD_MANUFACTURER_DATA: {
-        if (data_len >= 2) {
-          ServiceData sd;
-          uint16_t u = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
-          sd.uuid = ESPBTUUID::from_uint16(u);
-          sd.data.assign(data, data + data_len);
-          device.add_manufacturer_data(std::move(sd));
-        }
-        break;
-      }
-      default:
-        break;
+// Parse "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" into 16 bytes, LSB first (BLE
+// wire order).
+bool parse_uuid_str(const char *s, uint8_t out[16]) {
+  if (s == nullptr || std::strlen(s) != 36)
+    return false;
+  int pos = 0;
+  uint8_t be[16];
+  for (int i = 0; i < 36;) {
+    if (s[i] == '-') {
+      i++;
+      continue;
     }
-    pos += 1 + field_len;
+    unsigned v;
+    if (std::sscanf(s + i, "%02x", &v) != 1 || pos >= 16)
+      return false;
+    be[pos++] = static_cast<uint8_t>(v);
+    i += 2;
+  }
+  if (pos != 16)
+    return false;
+  for (int i = 0; i < 16; i++)
+    out[i] = be[15 - i];
+  return true;
+}
+
+// The Bluetooth Base UUID in LSB-first order; bytes 12..15 carry the short form.
+constexpr uint8_t BT_BASE_UUID_LSB[12] = {0xFB, 0x34, 0x9B, 0x5F, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00};
+
+// Shorten a 128-bit UUID to its 16- or 32-bit form when it sits on the
+// Bluetooth Base UUID. Returns the short width in bytes (2 or 4), or 16.
+uint8_t shorten_uuid(const uint8_t uuid_lsb[16], uint32_t &short_value) {
+  if (std::memcmp(uuid_lsb, BT_BASE_UUID_LSB, sizeof(BT_BASE_UUID_LSB)) != 0)
+    return 16;
+  short_value = static_cast<uint32_t>(uuid_lsb[12]) | (static_cast<uint32_t>(uuid_lsb[13]) << 8) |
+                (static_cast<uint32_t>(uuid_lsb[14]) << 16) | (static_cast<uint32_t>(uuid_lsb[15]) << 24);
+  return short_value <= 0xffff ? 2 : 4;
+}
+
+// Append one AD element (length, type, payload) to a frame, silently dropping
+// it when the frame is full — an over-long advertisement is truncated, never
+// malformed.
+void ad_append(uint8_t *data, uint8_t &len, size_t capacity, uint8_t type, const uint8_t *payload, size_t payload_len) {
+  if (payload_len > 0xfe || len + 2 + payload_len > capacity)
+    return;
+  data[len++] = static_cast<uint8_t>(1 + payload_len);
+  data[len++] = type;
+  if (payload_len > 0) {
+    std::memcpy(data + len, payload, payload_len);
+    len += static_cast<uint8_t>(payload_len);
   }
 }
 
+// Read a D-Bus "ay" (array of bytes) at the current message position into vec.
+int read_byte_array(sd_bus_message *m, std::vector<uint8_t> &vec) {
+  const void *data = nullptr;
+  size_t len = 0;
+  int r = sd_bus_message_read_array(m, 'y', &data, &len);
+  if (r < 0)
+    return r;
+  const uint8_t *p = static_cast<const uint8_t *>(data);
+  vec.assign(p, p + len);
+  return 0;
+}
+
 }  // namespace
-
-optional<ESPBLEiBeacon> ESPBLEiBeacon::from_manufacturer_data(const ServiceData &data) {
-  // Manufacturer data layout: data[0..1] = company ID (LE), data[2..] = payload.
-  if (data.data.size() < 2 + sizeof(ESPBLEiBeacon::beacon_data_))
-    return {};
-  // Apple = 0x004c, iBeacon sub-type = 0x02 length 0x15.
-  if (data.data[0] != 0x4c || data.data[1] != 0x00)
-    return {};
-  if (data.data[2] != 0x02 || data.data[3] != 0x15)
-    return {};
-  return ESPBLEiBeacon(data.data.data() + 2);
-}
-
-std::string ESPBTDevice::address_str() const {
-  char buf[18];
-  std::snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", this->address_[5], this->address_[4],
-                this->address_[3], this->address_[2], this->address_[1], this->address_[0]);
-  return std::string(buf);
-}
-
-uint64_t ESPBTDevice::address_uint64() const {
-  uint64_t v = 0;
-  for (int i = 5; i >= 0; i--)
-    v = (v << 8) | this->address_[i];
-  return v;
-}
 
 const char *esp_err_to_name(esp_err_t err) {
   switch (err) {
@@ -275,49 +234,213 @@ const char *client_state_to_string(ClientState state) {
 float ESP32BLETracker::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
 
 void ESP32BLETracker::setup() {
-  this->stop_thread_ = false;
-  if (this->use_hci_backend_) {
-    this->scanner_thread_ = std::thread([this] { this->scanner_thread_main_(); });
-  } else {
-    this->scanner_thread_ = std::thread([this] { this->dbus_scanner_thread_main_(); });
+  this->merger_.bind(&this->dispatcher_, &this->scan_continuous_, TAG);
+  this->read_adapter_mac_();
+  this->start_scan_();
+}
+
+void ESP32BLETracker::start_scan() {
+  if (this->scanner_state_ == ScannerState::STARTING || this->scanner_state_ == ScannerState::RUNNING)
+    return;
+  if (this->scanner_state_ == ScannerState::STOPPING) {
+    // The previous worker is still winding down; joining it here could block.
+    // The reap in loop() restarts once the stop completes.
+    ESP_LOGD(TAG, "Scan start deferred until the stop in flight completes");
+    this->restart_after_stop_ = true;
+    return;
   }
-  // Notify scanner-state listeners that scanning is running (host scan is
-  // always-on once the worker starts).
+  this->start_scan_();
+}
+
+void ESP32BLETracker::stop_scan() {
+  // Unlike core's trackers, the configured continuous mode is NOT latched off
+  // here: host stops never auto-restart from loop(), so the stop sticks on
+  // its own and a later start_scan() resumes in the configured mode.
+  this->restart_after_stop_ = false;  // cancel a restart queued behind a stop
+  if (this->scanner_state_ != ScannerState::STARTING && this->scanner_state_ != ScannerState::RUNNING)
+    return;
+  this->stop_scan_();
+}
+
+void ESP32BLETracker::start_scan_() {
+  // Only reachable from IDLE / FAILED (or setup), where the previous worker
+  // has already exited and been reaped by loop() — so this join, if any,
+  // returns immediately.
+  this->stop_thread_ = true;
+  if (this->scanner_thread_.joinable())
+    this->scanner_thread_.join();
+  this->stop_thread_ = false;
+  this->thread_exited_ = false;
+  // Provisional stamp, same clock as loop()'s `now` (a fresh millis() would be
+  // ahead of the cached loop time and underflow the period check); loop()
+  // re-anchors it when the backend is confirmed up (STARTING -> RUNNING).
+  this->scan_period_start_ = App.get_loop_component_start_time();
+  if (this->use_hci_backend_) {
+    this->scanner_thread_ = std::thread([this] {
+      this->scanner_thread_main_();
+      this->thread_exited_ = true;
+    });
+  } else {
+    this->scanner_thread_ = std::thread([this] {
+      this->dbus_scanner_thread_main_();
+      this->thread_exited_ = true;
+    });
+  }
+  // RUNNING is published by loop() once the worker reports the backend is
+  // actually up (scan_running_); a startup failure becomes FAILED instead.
+  this->set_scanner_state_(ScannerState::STARTING);
+}
+
+// Request an asynchronous stop. No join here: the worker's shutdown path can
+// block for the D-Bus method timeout if bluetoothd hangs in StopDiscovery, and
+// joining would stall the whole main loop. The worker notices stop_thread_
+// within one poll interval (200 ms), sends StopDiscovery / scan-disable, and
+// exits; loop()'s reap branch then completes the stop — draining the queue
+// before on_scan_end, publishing IDLE before the trigger, and honoring a
+// restart requested meanwhile.
+void ESP32BLETracker::stop_scan_() {
+  // Whether the reap should fire on_scan_end: only when a scan was actually
+  // running, and not when the request came from inside an on_scan_end
+  // automation (the continuous period timer fires the trigger while the scan
+  // still runs) — that outer dispatch already represents this scan boundary.
+  this->pending_stop_fire_ = this->scan_running_.load(std::memory_order_relaxed) && !this->in_scan_end_;
+  this->stop_thread_ = true;
+  this->set_scanner_state_(ScannerState::STOPPING);
+}
+
+void ESP32BLETracker::fire_scan_end_() {
+  // Deliver held advertisements whose scan response never arrived (unmerged)
+  // BEFORE on_scan_end fires.
+  this->merger_.flush();
+  this->in_scan_end_ = true;
+  this->dispatcher_.on_scan_end();
+  this->in_scan_end_ = false;
+}
+
+void ESP32BLETracker::set_scanner_state_(ScannerState state) {
+  this->scanner_state_ = state;
   for (auto *l : this->scanner_state_listeners_)
-    l->on_scanner_state(ScannerState::RUNNING);
+    l->on_scanner_state(state);
 }
 
 void ESP32BLETracker::dump_config() {
+  uint8_t adapter_mac[MAC_ADDRESS_SIZE];
+  this->get_adapter_mac(adapter_mac);
+  char mac[MAC_ADDRESS_PRETTY_BUFFER_SIZE];
+  std::snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X", adapter_mac[0], adapter_mac[1], adapter_mac[2],
+                adapter_mac[3], adapter_mac[4], adapter_mac[5]);
   if (this->use_hci_backend_) {
     ESP_LOGCONFIG(TAG, "BLE Tracker (Linux raw HCI):");
     ESP_LOGCONFIG(TAG, "  HCI device: %s", this->hci_device_name_.c_str());
     ESP_LOGCONFIG(TAG, "  Scan interval: %u ms", this->scan_interval_ms_);
     ESP_LOGCONFIG(TAG, "  Scan window: %u ms", this->scan_window_ms_);
-    ESP_LOGCONFIG(TAG, "  Active scan: %s", this->scan_active_ ? "yes" : "no");
   } else {
     ESP_LOGCONFIG(TAG, "BLE Tracker (Linux BlueZ D-Bus):");
     ESP_LOGCONFIG(TAG, "  Adapter: %s", this->hci_device_name_.c_str());
-    ESP_LOGCONFIG(TAG, "  Active scan: %s", this->scan_active_ ? "yes" : "no");
   }
-  ESP_LOGCONFIG(TAG, "  Listeners: %zu", this->listeners_.size());
+  ESP_LOGCONFIG(TAG, "  Adapter MAC: %s", mac);
+  ESP_LOGCONFIG(TAG, "  Active scan: %s", YESNO(this->scan_active_));
+  ESP_LOGCONFIG(TAG, "  Continuous: %s", YESNO(this->scan_continuous_));
 }
 
 void ESP32BLETracker::loop() {
-  std::deque<ESPBTDevice> drained;
-  {
-    std::lock_guard<std::mutex> g(this->queue_mu_);
-    drained.swap(this->queue_);
+  const uint32_t now = App.get_loop_component_start_time();
+
+  this->drain_queue_(now);
+  // Deliver held advertisements whose scan response never arrived.
+  if (!this->merger_.empty())
+    this->merger_.sweep(now);
+
+  // The worker confirmed the backend is up: STARTING becomes RUNNING.
+  if (this->scanner_state_ == ScannerState::STARTING && this->scan_running_.load(std::memory_order_relaxed)) {
+    // Re-anchor the period here, not at the spawn: HCI open / the blocking
+    // StartDiscovery can be slow, and the startup time would otherwise eat
+    // into the first period (a one-shot scan could end almost immediately).
+    this->scan_period_start_ = now;
+    this->set_scanner_state_(ScannerState::RUNNING);
   }
-  for (auto &device : drained) {
-    for (auto *listener : this->listeners_) {
-      listener->parse_device(device);
+
+  // Reap: the worker exited — because a stop was requested (STOPPING), or on
+  // its own (backend failed to start, or a fatal error killed a running
+  // scan). The join returns immediately: the worker has already exited, so
+  // this never blocks on a hung StopDiscovery (see stop_scan_()). Ordering
+  // guarantees: queue drained before on_scan_end; the terminal state (IDLE /
+  // FAILED) published before the trigger, so an on_scan_end automation may
+  // restart reentrantly and its STARTING is not clobbered afterwards. A
+  // startup failure never scanned, so no on_scan_end fires for it.
+  if (this->thread_exited_.load(std::memory_order_relaxed) &&
+      (this->scanner_state_ == ScannerState::STARTING || this->scanner_state_ == ScannerState::RUNNING ||
+       this->scanner_state_ == ScannerState::STOPPING)) {
+    const ScannerState prev = this->scanner_state_;
+    if (this->scanner_thread_.joinable())
+      this->scanner_thread_.join();
+    this->thread_exited_ = false;
+    this->drain_queue_(now);
+    bool fire;
+    if (prev == ScannerState::STOPPING) {
+      ESP_LOGD(TAG, "Scan stopped");
+      fire = this->pending_stop_fire_;
+      this->set_scanner_state_(ScannerState::IDLE);
+    } else {
+      const bool ran = prev == ScannerState::RUNNING;
+      ESP_LOGW(TAG, "Scan worker exited %s; scanner FAILED", ran ? "mid-scan" : "during startup");
+      fire = ran;
+      this->set_scanner_state_(ScannerState::FAILED);
+    }
+    this->pending_stop_fire_ = false;
+    if (fire)
+      this->fire_scan_end_();
+    // A start_scan() issued while the stop was still in flight; the public
+    // gate keeps this a no-op if the trigger above already restarted.
+    if (this->restart_after_stop_) {
+      this->restart_after_stop_ = false;
+      this->start_scan();
     }
   }
+
+  // Period timer, mirroring core's trackers: a continuous scan fires
+  // on_scan_end() once per duration and keeps scanning; a one-shot scan
+  // (continuous: false) stops the backend after its first duration and fires
+  // on_scan_end() once. Restart is external (start_scan()).
+  if (this->scanner_state_ == ScannerState::RUNNING && this->scan_running_.load(std::memory_order_relaxed) &&
+      now - this->scan_period_start_ >= this->scan_duration_s_ * 1000) {
+    if (this->scan_continuous_) {
+      this->scan_period_start_ = now;
+      this->fire_scan_end_();
+    } else {
+      this->stop_scan_();
+    }
+  }
+
   // Promote any client a listener just moved to DISCOVERED. Cheap fast-path:
   // only scan clients when a state change was signalled.
   if (!this->clients_.empty() && this->state_version_ != this->last_state_version_) {
     this->last_state_version_ = this->state_version_;
     this->try_promote_discovered_clients_();
+  }
+}
+
+// Dispatch every frame the worker enqueued so far. Runs on the main loop; also
+// called from stop_scan_() after the worker is joined, so late frames are
+// delivered BEFORE on_scan_end fires.
+void ESP32BLETracker::drain_queue_(uint32_t now) {
+  std::deque<AdvFrame> drained;
+  {
+    std::lock_guard<std::mutex> g(this->queue_mu_);
+    drained.swap(this->queue_);
+  }
+  // Log unclaimed devices only on one-shot scans; a continuous scan would spam.
+  const char *log_tag = this->scan_continuous_ ? nullptr : TAG;
+  for (const auto &f : drained) {
+    if (f.evt_type == EVT_TYPE_MERGED) {
+      this->dispatcher_.dispatch(f.mac, f.rssi, f.addr_type, f.data, f.len, false, log_tag);
+    } else if (f.evt_type == SCAN_RSP) {
+      this->merger_.submit_scan_rsp(f.mac, f.rssi, f.addr_type, f.data, f.len);
+    } else if (this->scan_active_ && (f.evt_type == ADV_IND || f.evt_type == ADV_SCAN_IND)) {
+      this->merger_.stash_adv(f.mac, f.rssi, f.addr_type, f.data, f.len, now);
+    } else {
+      this->dispatcher_.dispatch(f.mac, f.rssi, f.addr_type, f.data, f.len, false, log_tag);
+    }
   }
 }
 
@@ -330,13 +453,71 @@ void ESP32BLETracker::try_promote_discovered_clients_() {
   }
 }
 
-void ESP32BLETracker::deliver_device_(ESPBTDevice device) {
-  ESP_LOGV(TAG, "Advertisement: %s RSSI=%d name='%s' service_uuids=%zu", device.address_str().c_str(),
-           device.get_rssi(), device.get_name().c_str(), device.get_service_uuids().size());
-  std::lock_guard<std::mutex> g(this->queue_mu_);
-  if (this->queue_.size() >= QUEUE_MAX)
-    this->queue_.pop_front();
-  this->queue_.push_back(std::move(device));
+void ESP32BLETracker::enqueue_frame_(const AdvFrame &frame) {
+  {
+    std::lock_guard<std::mutex> g(this->queue_mu_);
+    if (this->queue_.size() >= QUEUE_MAX)
+      this->queue_.pop_front();
+    this->queue_.push_back(frame);
+  }
+  // The main loop can sleep in select() for a full loop interval; wake it so
+  // the advertisement is dispatched now rather than at the next tick.
+  App.wake_loop_threadsafe();
+}
+
+// Primary adapter-MAC source, called from setup() for BOTH backends: the
+// HCIGETDEVINFO ioctl is local and fast (no D-Bus round trip that could block
+// the main thread on a hung bluetoothd). Leaves the MAC zeroed when the
+// device name is not hciN or the ioctl fails; the D-Bus worker then fills it
+// late via read_adapter_mac_dbus_().
+void ESP32BLETracker::read_adapter_mac_() {
+  int dev_id = -1;
+  if (this->hci_device_name_.size() > 3 && this->hci_device_name_.rfind("hci", 0) == 0)
+    dev_id = std::atoi(this->hci_device_name_.c_str() + 3);
+  if (dev_id < 0)
+    return;
+  int fd = socket(AF_BLUETOOTH_LOCAL, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI_LOCAL);
+  if (fd < 0)
+    return;
+  uint8_t info[HCI_DEV_INFO_SIZE]{};
+  // struct hci_dev_info begins with the dev_id the ioctl looks up.
+  uint16_t id = static_cast<uint16_t>(dev_id);
+  std::memcpy(info, &id, sizeof(id));
+  if (ioctl(fd, HCIGETDEVINFO_LOCAL, info) == 0) {
+    std::lock_guard<std::mutex> g(this->adapter_mac_mu_);
+    // Stored LSB first by the kernel; the contract wants printable order.
+    for (int i = 0; i < 6; i++)
+      this->adapter_mac_[i] = info[HCI_DEV_INFO_BDADDR_OFFSET + 5 - i];
+  }
+  ::close(fd);
+}
+
+// D-Bus fallback, run on the scanner worker thread (a synchronous property
+// read may block for the D-Bus method timeout — never do that on the main
+// thread for cosmetic metadata). Skipped when the ioctl already resolved it.
+void ESP32BLETracker::read_adapter_mac_dbus_(sd_bus *bus) {
+  {
+    std::lock_guard<std::mutex> g(this->adapter_mac_mu_);
+    for (uint8_t b : this->adapter_mac_) {
+      if (b != 0)
+        return;  // already resolved
+    }
+  }
+  std::string adapter_path = "/org/bluez/" + this->hci_device_name_;
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  char *address = nullptr;
+  if (sd_bus_get_property_string(bus, "org.bluez", adapter_path.c_str(), "org.bluez.Adapter1", "Address", &err,
+                                 &address) >= 0 &&
+      address != nullptr) {
+    uint8_t lsb[6];
+    if (parse_bdaddr(address, lsb)) {
+      std::lock_guard<std::mutex> g(this->adapter_mac_mu_);
+      for (int i = 0; i < 6; i++)
+        this->adapter_mac_[i] = lsb[5 - i];
+    }
+  }
+  free(address);
+  sd_bus_error_free(&err);
 }
 
 bool ESP32BLETracker::open_hci_() {
@@ -450,55 +631,129 @@ void ESP32BLETracker::handle_le_meta_event_(const uint8_t *evt, size_t len) {
   for (uint8_t i = 0; i < num_reports; i++) {
     if (pos + 9 > len)
       return;
-    uint8_t /*evt_type*/ _t = evt[pos];
-    (void) _t;
-    uint8_t /*addr_type*/ _at = evt[pos + 1];
-    (void) _at;
-    const uint8_t *addr = evt + pos + 2;  // 6 bytes, little-endian (LSB first)
+    AdvFrame frame{};
+    frame.evt_type = evt[pos];
+    frame.addr_type = evt[pos + 1];
+    std::memcpy(frame.mac, evt + pos + 2, MAC_ADDRESS_SIZE);  // little-endian (LSB first)
     uint8_t data_len = evt[pos + 8];
     if (pos + 9 + data_len + 1 > len)
       return;
-    const uint8_t *data = evt + pos + 9;
-    int8_t rssi = static_cast<int8_t>(evt[pos + 9 + data_len]);
-
-    ESPBTDevice device;
-    device.set_address(addr);
-    device.set_rssi(rssi);
-    parse_ad_payload(data, data_len, device);
-    this->deliver_device_(std::move(device));
+    frame.len = data_len > sizeof(frame.data) ? static_cast<uint8_t>(sizeof(frame.data)) : data_len;
+    std::memcpy(frame.data, evt + pos + 9, frame.len);
+    frame.rssi = static_cast<int8_t>(evt[pos + 9 + data_len]);
+    this->enqueue_frame_(frame);
 
     pos += 9 + data_len + 1;
   }
 }
 
+// Wait (bounded) for the Command Complete / Command Status event of `opcode`
+// and return true only when the controller reports success. The event mask
+// set in open_hci_() subscribes both event codes. Scanning is not yet enabled
+// while this runs, so discarding unrelated events loses nothing.
+bool ESP32BLETracker::wait_hci_cmd_status_(uint16_t opcode, uint32_t timeout_ms) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  uint8_t buf[1024];
+  while (std::chrono::steady_clock::now() < deadline && !this->stop_thread_.load()) {
+    pollfd pfd{this->hci_fd_, POLLIN, 0};
+    int pr = poll(&pfd, 1, 100);
+    if (pr < 0) {
+      if (errno == EINTR)
+        continue;
+      return false;
+    }
+    if (pr == 0)
+      continue;
+    if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+      return false;
+    ssize_t n = read(this->hci_fd_, buf, sizeof(buf));
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n <= 0)
+      return false;
+    if (n < 3 || buf[0] != HCI_EVENT_PKT)
+      continue;
+    const uint8_t evt = buf[1], plen = buf[2];
+    if (static_cast<size_t>(n) < 3u + plen)
+      continue;
+    const uint8_t *p = buf + 3;
+    if (evt == EVT_CMD_COMPLETE && plen >= 4) {
+      // num_hci_cmd_pkts(1) opcode(2, LE) status(1)
+      uint16_t got = static_cast<uint16_t>(p[1] | (p[2] << 8));
+      if (got == opcode)
+        return p[3] == 0x00;
+    } else if (evt == EVT_CMD_STATUS && plen >= 4) {
+      // status(1) num_hci_cmd_pkts(1) opcode(2, LE)
+      uint16_t got = static_cast<uint16_t>(p[2] | (p[3] << 8));
+      if (got == opcode)
+        return p[0] == 0x00;
+    }
+  }
+  return false;  // controller never answered — treat as failure
+}
+
 void ESP32BLETracker::scanner_thread_main_() {
+  // Bound for each controller command acknowledgment below.
+  static constexpr uint32_t HCI_CMD_TIMEOUT_MS = 1000;
   if (!this->open_hci_()) {
     return;
   }
-  // Stop any in-progress scan from a previous owner so set_scan_params succeeds.
+  // Stop any in-progress scan from a previous owner so set_scan_params
+  // succeeds. Best-effort: fails legitimately when no scan was active, so its
+  // completion status is not checked (the next wait skips its event by opcode).
   this->send_le_set_scan_enable_(false);
-  if (!this->send_le_set_scan_params_()) {
-    ESP_LOGW(TAG, "BLE scan disabled. Grant the binary HCI capabilities once: "
+  // Check each Command Complete status: a write can succeed while the
+  // controller rejects the command (e.g. adapter owned by another stack) —
+  // exiting without scan_running_ makes the reap report FAILED instead of a
+  // scan that "completed" having collected nothing.
+  if (!this->send_le_set_scan_params_() ||
+      !this->wait_hci_cmd_status_(hci_opcode(OGF_LE_CTL, OCF_LE_SET_SCAN_PARAMETERS), HCI_CMD_TIMEOUT_MS)) {
+    ESP_LOGW(TAG, "LE scan parameters rejected — BLE scan disabled. Is the adapter free (not held by "
+                  "bluetoothd)? Grant the binary HCI capabilities once: "
                   "sudo setcap 'cap_net_admin,cap_net_raw+eip' <program>");
     this->close_hci_();
     return;
   }
-  if (!this->send_le_set_scan_enable_(true)) {
-    ESP_LOGW(TAG, "BLE scan enable rejected. Grant the binary HCI capabilities once: "
+  if (!this->send_le_set_scan_enable_(true) ||
+      !this->wait_hci_cmd_status_(hci_opcode(OGF_LE_CTL, OCF_LE_SET_SCAN_ENABLE), HCI_CMD_TIMEOUT_MS)) {
+    ESP_LOGW(TAG, "LE scan enable rejected — BLE scan disabled. Is the adapter free (not held by "
+                  "bluetoothd)? Grant the binary HCI capabilities once: "
                   "sudo setcap 'cap_net_admin,cap_net_raw+eip' <program>");
     this->close_hci_();
     return;
   }
-  this->hci_ok_ = true;
+  this->scan_running_ = true;
   ESP_LOGI(TAG, "BLE scan started on %s", this->hci_device_name_.c_str());
 
   uint8_t buf[1024];
   while (!this->stop_thread_.load()) {
+    // Poll with a timeout so stop_thread_ is checked promptly even when no
+    // advertisements arrive (a blocking read() could park here forever).
+    pollfd pfd{this->hci_fd_, POLLIN, 0};
+    int pr = poll(&pfd, 1, 200);
+    if (pr < 0) {
+      if (errno == EINTR)
+        continue;
+      ESP_LOGW(TAG, "HCI poll error: %s", std::strerror(errno));
+      break;
+    }
+    if (pr == 0)
+      continue;
+    // Adapter unplugged / socket dead: without this check a zero-byte read
+    // would spin the loop at full CPU forever.
+    if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      ESP_LOGW(TAG, "HCI socket error (adapter gone?), stopping scan worker");
+      break;
+    }
     ssize_t n = read(this->hci_fd_, buf, sizeof(buf));
     if (n < 0) {
       if (errno == EINTR)
         continue;
       ESP_LOGW(TAG, "HCI read error: %s", std::strerror(errno));
+      break;
+    }
+    if (n == 0) {
+      ESP_LOGW(TAG, "HCI socket EOF, stopping scan worker");
       break;
     }
     if (n < 3)
@@ -513,6 +768,7 @@ void ESP32BLETracker::scanner_thread_main_() {
       this->handle_le_meta_event_(buf + 3, plen);
     }
   }
+  this->scan_running_ = false;
   this->send_le_set_scan_enable_(false);
   this->close_hci_();
 }
@@ -523,45 +779,38 @@ void ESP32BLETracker::scanner_thread_main_() {
 // Talks to bluetoothd over the system bus, so it coexists with anything else
 // using the adapter. It asks bluetoothd to discover, then reads the *parsed*
 // org.bluez.Device1 properties (Address/RSSI/Name/UUIDs/ServiceData/
-// ManufacturerData) and feeds them into the same deliver_device_() path the
-// listeners consume.
+// ManufacturerData) and re-encodes them into the AD structures the neutral
+// ESPBTDevice parser consumes. BlueZ has already merged advertisement and scan
+// response at that point, so these frames bypass the scan-response merger.
 //
 // BlueZ does NOT expose the raw advertising PDU here (only decoded fields); for
 // byte-exact raw advertisements use the hci_backend opt-in.
 // ---------------------------------------------------------------------------
 
-namespace {
-
-// Parse "AA:BB:CC:DD:EE:FF" into address_[] (LSB-first, matching set_address).
-bool parse_bdaddr(const char *str, uint8_t out[6]) {
-  unsigned vals[6];
-  if (std::sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x", &vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5]) != 6)
-    return false;
-  // String is big-endian (MSB first); ESPBTDevice stores LSB-first.
-  for (int i = 0; i < 6; i++)
-    out[i] = static_cast<uint8_t>(vals[5 - i]);
-  return true;
-}
-
-// Read a D-Bus "ay" (array of bytes) at the current message position into vec.
-int read_byte_array(sd_bus_message *m, std::vector<uint8_t> &vec) {
-  const void *data = nullptr;
-  size_t len = 0;
-  int r = sd_bus_message_read_array(m, 'y', &data, &len);
-  if (r < 0)
-    return r;
-  const uint8_t *p = static_cast<const uint8_t *>(data);
-  vec.assign(p, p + len);
-  return 0;
-}
-
-}  // namespace
-
 // Parse a single org.bluez.Device1 property dictionary (a{sv}) that the message
-// is currently positioned to enter, populating `device`. Returns true if at
-// least an Address was found. The message must be positioned at the 'a{sv}'.
-bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &device) {
+// is currently positioned to enter, re-encoding it into `frame`. Returns true if
+// at least an Address was found. The message must be positioned at the 'a{sv}'.
+//
+// The properties arrive in whatever order BlueZ put them in the dict, so they
+// are staged first and encoded afterwards in a fixed priority order (see below).
+bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
   bool have_address = false;
+  std::string name;
+  bool have_tx_power = false;
+  uint8_t tx_power = 0;
+  bool have_appearance = false;
+  uint16_t appearance = 0;
+  // Service UUIDs packed LSB-first, grouped by width: same-width UUIDs share
+  // one complete-list AD element (types 0x03/0x05/0x07) instead of one element
+  // each, saving 2 bytes per extra UUID in the 62-byte frame.
+  std::vector<uint8_t> uuid16, uuid32, uuid128;
+  // Service data + manufacturer data elements, in arrival order.
+  struct StagedAd {
+    uint8_t type;
+    std::vector<uint8_t> payload;
+  };
+  std::vector<StagedAd> data_elements;
+
   int r = sd_bus_message_enter_container(m, 'a', "{sv}");
   if (r < 0)
     return false;
@@ -576,35 +825,54 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &devic
     if (std::strcmp(key, "Address") == 0) {
       const char *addr = nullptr;
       sd_bus_message_read(m, "v", "s", &addr);
-      uint8_t bd[6];
-      if (addr != nullptr && parse_bdaddr(addr, bd)) {
-        device.set_address(bd);
+      if (addr != nullptr && parse_bdaddr(addr, frame.mac))
         have_address = true;
+    } else if (std::strcmp(key, "AddressType") == 0) {
+      const char *type = nullptr;
+      sd_bus_message_read(m, "v", "s", &type);
+      if (type != nullptr) {
+        frame.addr_type = std::strcmp(type, "random") == 0 ? ble_device_base::BLE_ADDR_TYPE_RANDOM
+                                                           : ble_device_base::BLE_ADDR_TYPE_PUBLIC;
       }
     } else if (std::strcmp(key, "Name") == 0) {
-      const char *name = nullptr;
-      sd_bus_message_read(m, "v", "s", &name);
-      if (name != nullptr)
-        device.set_name(name);
+      const char *name_str = nullptr;
+      sd_bus_message_read(m, "v", "s", &name_str);
+      if (name_str != nullptr)
+        name = name_str;
     } else if (std::strcmp(key, "RSSI") == 0) {
       int16_t rssi = 0;
       sd_bus_message_read(m, "v", "n", &rssi);
-      device.set_rssi(static_cast<int8_t>(rssi));
+      frame.rssi = static_cast<int8_t>(rssi);
     } else if (std::strcmp(key, "TxPower") == 0) {
       int16_t tx = 0;
       sd_bus_message_read(m, "v", "n", &tx);
-      device.add_tx_power(static_cast<int8_t>(tx));
+      tx_power = static_cast<uint8_t>(static_cast<int8_t>(tx));
+      have_tx_power = true;
     } else if (std::strcmp(key, "Appearance") == 0) {
-      uint16_t app = 0;
-      sd_bus_message_read(m, "v", "q", &app);
-      device.set_appearance(app);
+      sd_bus_message_read(m, "v", "q", &appearance);
+      have_appearance = true;
     } else if (std::strcmp(key, "UUIDs") == 0) {
       sd_bus_message_enter_container(m, 'v', "as");
       sd_bus_message_enter_container(m, 'a', "s");
       const char *uuid = nullptr;
       while (sd_bus_message_read(m, "s", &uuid) > 0) {
-        if (uuid != nullptr)
-          device.add_service_uuid(ESPBTUUID::from_uuid_str(uuid));
+        uint8_t raw[16];
+        if (uuid == nullptr || !parse_uuid_str(uuid, raw))
+          continue;
+        uint32_t short_value = 0;
+        switch (shorten_uuid(raw, short_value)) {
+          case 2:
+            uuid16.push_back(static_cast<uint8_t>(short_value & 0xff));
+            uuid16.push_back(static_cast<uint8_t>(short_value >> 8));
+            break;
+          case 4:
+            for (int shift = 0; shift < 32; shift += 8)
+              uuid32.push_back(static_cast<uint8_t>(short_value >> shift));
+            break;
+          default:
+            uuid128.insert(uuid128.end(), raw, raw + 16);
+            break;
+        }
       }
       sd_bus_message_exit_container(m);
       sd_bus_message_exit_container(m);
@@ -619,16 +887,13 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &devic
         uint16_t company = 0;
         sd_bus_message_read(m, "q", &company);
         sd_bus_message_enter_container(m, 'v', "ay");
-        ServiceData sd;
-        sd.uuid = ESPBTUUID::from_uint16(company);
-        // Manufacturer data is stored company-LE-prefixed so iBeacon parsing
-        // (from_manufacturer_data) can read company id from data[0..1].
-        sd.data.push_back(static_cast<uint8_t>(company & 0xff));
-        sd.data.push_back(static_cast<uint8_t>(company >> 8));
         std::vector<uint8_t> payload;
-        read_byte_array(m, payload);
-        sd.data.insert(sd.data.end(), payload.begin(), payload.end());
-        device.add_manufacturer_data(std::move(sd));
+        payload.push_back(static_cast<uint8_t>(company & 0xff));
+        payload.push_back(static_cast<uint8_t>(company >> 8));
+        std::vector<uint8_t> body;
+        read_byte_array(m, body);
+        payload.insert(payload.end(), body.begin(), body.end());
+        data_elements.push_back({AD_MANUFACTURER_DATA, std::move(payload)});
         sd_bus_message_exit_container(m);  // v
         sd_bus_message_exit_container(m);  // e
       }
@@ -645,11 +910,27 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &devic
         const char *uuid = nullptr;
         sd_bus_message_read(m, "s", &uuid);
         sd_bus_message_enter_container(m, 'v', "ay");
-        ServiceData sd;
-        if (uuid != nullptr)
-          sd.uuid = ESPBTUUID::from_uuid_str(uuid);
-        read_byte_array(m, sd.data);
-        device.add_service_data(std::move(sd));
+        std::vector<uint8_t> body;
+        read_byte_array(m, body);
+        uint8_t raw[16];
+        if (uuid != nullptr && parse_uuid_str(uuid, raw)) {
+          std::vector<uint8_t> payload;
+          uint32_t short_value = 0;
+          uint8_t width = shorten_uuid(raw, short_value);
+          uint8_t ad_type = AD_SERVICE_DATA_UUID128;
+          if (width == 2) {
+            ad_type = AD_SERVICE_DATA_UUID16;
+            payload = {static_cast<uint8_t>(short_value & 0xff), static_cast<uint8_t>(short_value >> 8)};
+          } else if (width == 4) {
+            ad_type = AD_SERVICE_DATA_UUID32;
+            payload = {static_cast<uint8_t>(short_value & 0xff), static_cast<uint8_t>(short_value >> 8),
+                       static_cast<uint8_t>(short_value >> 16), static_cast<uint8_t>(short_value >> 24)};
+          } else {
+            payload.assign(raw, raw + 16);
+          }
+          payload.insert(payload.end(), body.begin(), body.end());
+          data_elements.push_back({ad_type, std::move(payload)});
+        }
         sd_bus_message_exit_container(m);  // v
         sd_bus_message_exit_container(m);  // e
       }
@@ -662,7 +943,123 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &devic
     sd_bus_message_exit_container(m);  // dict entry
   }
   sd_bus_message_exit_container(m);  // a{sv}
+
+  // Encode in priority order: stock parsers key on service data and
+  // manufacturer data, so those go first; UUID lists next; appearance,
+  // TX power, and the name last, like real advertisers that push the name to
+  // the scan response. When the 62-byte frame fills up it is the trailing
+  // (least critical) elements that get truncated.
+  for (const auto &el : data_elements)
+    ad_append(frame.data, frame.len, sizeof(frame.data), el.type, el.payload.data(), el.payload.size());
+  // A UUID list that no longer fits whole is trimmed to as many complete
+  // entries as fit rather than dropped — and a trimmed list must not claim
+  // completeness, so it is emitted with the incomplete-list AD type.
+  auto append_uuid_list = [&frame](uint8_t complete_type, uint8_t incomplete_type,
+                                   const std::vector<uint8_t> &packed, size_t width) {
+    if (packed.empty())
+      return;
+    size_t avail = sizeof(frame.data) - frame.len;
+    if (avail < 2 + width)
+      return;
+    size_t n = std::min(packed.size(), ((avail - 2) / width) * width);
+    uint8_t type = n < packed.size() ? incomplete_type : complete_type;
+    ad_append(frame.data, frame.len, sizeof(frame.data), type, packed.data(), n);
+  };
+  append_uuid_list(AD_COMPLETE_LIST_UUID16, AD_INCOMPLETE_LIST_UUID16, uuid16, 2);
+  append_uuid_list(AD_COMPLETE_LIST_UUID32, AD_INCOMPLETE_LIST_UUID32, uuid32, 4);
+  append_uuid_list(AD_COMPLETE_LIST_UUID128, AD_INCOMPLETE_LIST_UUID128, uuid128, 16);
+  if (have_appearance) {
+    uint8_t v[2] = {static_cast<uint8_t>(appearance & 0xff), static_cast<uint8_t>(appearance >> 8)};
+    ad_append(frame.data, frame.len, sizeof(frame.data), AD_APPEARANCE, v, sizeof(v));
+  }
+  if (have_tx_power)
+    ad_append(frame.data, frame.len, sizeof(frame.data), AD_TX_POWER_LEVEL, &tx_power, 1);
+  if (!name.empty()) {
+    ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LOCAL_NAME,
+              reinterpret_cast<const uint8_t *>(name.c_str()), name.size());
+  }
   return have_address;
+}
+
+// MAC packed into a u64 for the address-type cache key.
+static uint64_t mac_key(const uint8_t mac[MAC_ADDRESS_SIZE]) {
+  uint64_t key = 0;
+  for (int i = 0; i < MAC_ADDRESS_SIZE; i++)
+    key = (key << 8) | mac[i];
+  return key;
+}
+
+void ESP32BLETracker::record_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t addr_type) {
+  const uint64_t key = mac_key(mac);
+  for (auto &entry : this->dbus_addr_types_) {
+    if (entry.first == key) {
+      entry.second = addr_type;
+      return;
+    }
+  }
+  this->dbus_addr_types_.emplace_back(key, addr_type);
+}
+
+void ESP32BLETracker::lookup_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t &addr_type) const {
+  const uint64_t key = mac_key(mac);
+  for (const auto &entry : this->dbus_addr_types_) {
+    if (entry.first == key) {
+      addr_type = entry.second;
+      return;
+    }
+  }
+}
+
+// Seed the address-type cache from Device1 objects that already exist in
+// BlueZ: created before we subscribed, they generate no InterfacesAdded, and
+// their later PropertiesChanged updates rarely carry AddressType — without
+// this a pre-existing random-address device would be reported as public.
+// Runs on the worker thread, after the signal subscriptions, so no device
+// slips between enumeration and subscription (a duplicate record is
+// harmless). Cache-only: no frames are emitted for these possibly-stale
+// BlueZ cache entries.
+void ESP32BLETracker::seed_addr_types_(sd_bus *bus) {
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  sd_bus_message *reply = nullptr;
+  int r = sd_bus_call_method(bus, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects", &err,
+                             &reply, "");
+  if (r < 0) {
+    ESP_LOGD(TAG, "D-Bus: GetManagedObjects failed: %s", err.message ? err.message : std::strerror(-r));
+    sd_bus_error_free(&err);
+    return;
+  }
+  // Reply is a{oa{sa{sv}}}: object path -> interface -> properties.
+  if (sd_bus_message_enter_container(reply, 'a', "{oa{sa{sv}}}") >= 0) {
+    for (;;) {
+      r = sd_bus_message_enter_container(reply, 'e', "oa{sa{sv}}");
+      if (r <= 0)
+        break;
+      const char *obj_path = nullptr;
+      sd_bus_message_read(reply, "o", &obj_path);
+      if (sd_bus_message_enter_container(reply, 'a', "{sa{sv}}") >= 0) {
+        for (;;) {
+          int r2 = sd_bus_message_enter_container(reply, 'e', "sa{sv}");
+          if (r2 <= 0)
+            break;
+          const char *iface = nullptr;
+          sd_bus_message_read(reply, "s", &iface);
+          if (iface != nullptr && std::strcmp(iface, "org.bluez.Device1") == 0) {
+            AdvFrame frame{};
+            if (this->parse_device1_props_(reply, frame))
+              this->record_addr_type_(frame.mac, frame.addr_type);
+          } else {
+            sd_bus_message_skip(reply, "a{sv}");
+          }
+          sd_bus_message_exit_container(reply);  // interface entry
+        }
+        sd_bus_message_exit_container(reply);  // interfaces array
+      }
+      sd_bus_message_exit_container(reply);  // object entry
+    }
+    sd_bus_message_exit_container(reply);  // objects array
+  }
+  sd_bus_error_free(&err);
+  sd_bus_message_unref(reply);
 }
 
 void ESP32BLETracker::dbus_scanner_thread_main_() {
@@ -674,6 +1071,9 @@ void ESP32BLETracker::dbus_scanner_thread_main_() {
   }
 
   std::string adapter_path = "/org/bluez/" + this->hci_device_name_;
+
+  // Late adapter-MAC fill when setup()'s local ioctl could not resolve it.
+  this->read_adapter_mac_dbus_(bus);
 
   // SetDiscoveryFilter: LE transport, keep duplicate adverts so we see the
   // advertisement firehose (otherwise BlueZ coalesces unchanged data).
@@ -710,6 +1110,9 @@ void ESP32BLETracker::dbus_scanner_thread_main_() {
   sd_bus_match_signal(bus, &slot_changed, "org.bluez", nullptr, "org.freedesktop.DBus.Properties",
                       "PropertiesChanged", &ESP32BLETracker::on_properties_changed_, this);
 
+  // Learn the address types of devices BlueZ already knows about.
+  this->seed_addr_types_(bus);
+
   // StartDiscovery.
   {
     sd_bus_error err = SD_BUS_ERROR_NULL;
@@ -727,7 +1130,7 @@ void ESP32BLETracker::dbus_scanner_thread_main_() {
     sd_bus_error_free(&err);
   }
 
-  this->hci_ok_ = true;
+  this->scan_running_ = true;
   ESP_LOGI(TAG, "BLE scan started via BlueZ D-Bus on %s", this->hci_device_name_.c_str());
 
   while (!this->stop_thread_.load()) {
@@ -740,6 +1143,7 @@ void ESP32BLETracker::dbus_scanner_thread_main_() {
       continue;  // more work queued, process it before waiting
     sd_bus_wait(bus, 200000);  // 200 ms, so stop_thread_ is checked promptly
   }
+  this->scan_running_ = false;
 
   {
     sd_bus_error err = SD_BUS_ERROR_NULL;
@@ -768,9 +1172,13 @@ int ESP32BLETracker::on_interfaces_added_(sd_bus_message *m, void *userdata, sd_
     const char *iface = nullptr;
     sd_bus_message_read(m, "s", &iface);
     if (iface != nullptr && std::strcmp(iface, "org.bluez.Device1") == 0) {
-      ESPBTDevice device;
-      if (self->parse_device1_props_(m, device))
-        self->deliver_device_(std::move(device));
+      AdvFrame frame{};
+      frame.evt_type = EVT_TYPE_MERGED;
+      if (self->parse_device1_props_(m, frame)) {
+        // Remember the address type: PropertiesChanged updates rarely repeat it.
+        self->record_addr_type_(frame.mac, frame.addr_type);
+        self->enqueue_frame_(frame);
+      }
     } else {
       sd_bus_message_skip(m, "a{sv}");
     }
@@ -793,28 +1201,31 @@ int ESP32BLETracker::on_properties_changed_(sd_bus_message *m, void *userdata, s
 
   // The device MAC is in the signal's object path: /org/bluez/hciN/dev_AA_BB_..
   const char *path = sd_bus_message_get_path(m);
-  ESPBTDevice device;
+  AdvFrame frame{};
+  frame.evt_type = EVT_TYPE_MERGED;
   bool have_address = false;
   if (path != nullptr) {
     const char *dev = std::strstr(path, "/dev_");
     if (dev != nullptr) {
-      char macbuf[18];
+      char macbuf[MAC_ADDRESS_PRETTY_BUFFER_SIZE];
       // dev_AA_BB_CC_DD_EE_FF -> AA:BB:CC:DD:EE:FF
       std::snprintf(macbuf, sizeof(macbuf), "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c", dev[5], dev[6], dev[8], dev[9], dev[11],
                     dev[12], dev[14], dev[15], dev[17], dev[18], dev[20], dev[21]);
-      uint8_t bd[6];
-      if (parse_bdaddr(macbuf, bd)) {
-        device.set_address(bd);
-        have_address = true;
-      }
+      have_address = parse_bdaddr(macbuf, frame.mac);
     }
   }
   if (!have_address)
     return 0;
 
-  // Reuse the a{sv} parser for the changed-properties dict (same signature).
-  self->parse_device1_props_(m, device);
-  self->deliver_device_(std::move(device));
+  // Changed-properties dicts rarely repeat AddressType, so seed it from the
+  // cache filled at InterfacesAdded; otherwise every RSSI-only update would
+  // flip a random-address device back to public.
+  self->lookup_addr_type_(frame.mac, frame.addr_type);
+  // Reuse the a{sv} parser for the changed-properties dict (same signature);
+  // it overrides the seeded address type if the signal does carry one.
+  self->parse_device1_props_(m, frame);
+  self->record_addr_type_(frame.mac, frame.addr_type);
+  self->enqueue_frame_(frame);
   return 0;
 }
 

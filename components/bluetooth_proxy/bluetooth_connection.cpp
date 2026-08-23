@@ -1,4 +1,6 @@
-#if defined(USE_ESP32) || defined(USE_HOST)
+#include "esphome/core/defines.h"
+
+#if (defined(USE_ESP32) || defined(USE_HOST)) && defined(USE_BLUETOOTH_PROXY_CONNECTIONS)
 
 #include "bluetooth_connection.h"
 
@@ -112,7 +114,7 @@ void BluetoothConnection::dispatch_event_(const esp32_ble_client::HostGattEvent 
         resp.address = this->address_;
         resp.handle = ev.handle;
         resp.set_data(ev.data.get(), ev.len);
-        api_connection->send_message(resp);
+        [[maybe_unused]] bool sent = api_connection->send_message(resp);
       }
       break;
     case HostGattEvent::Kind::WRITE_COMPLETE:
@@ -123,7 +125,7 @@ void BluetoothConnection::dispatch_event_(const esp32_ble_client::HostGattEvent 
         api::BluetoothGATTWriteResponse resp;
         resp.address = this->address_;
         resp.handle = ev.handle;
-        api_connection->send_message(resp);
+        [[maybe_unused]] bool sent = api_connection->send_message(resp);
       }
       break;
     case HostGattEvent::Kind::NOTIFY_REGISTERED:
@@ -133,7 +135,7 @@ void BluetoothConnection::dispatch_event_(const esp32_ble_client::HostGattEvent 
         api::BluetoothGATTNotifyResponse resp;
         resp.address = this->address_;
         resp.handle = ev.handle;
-        api_connection->send_message(resp);
+        [[maybe_unused]] bool sent = api_connection->send_message(resp);
       }
       break;
     case HostGattEvent::Kind::NOTIFY:
@@ -142,7 +144,7 @@ void BluetoothConnection::dispatch_event_(const esp32_ble_client::HostGattEvent 
         resp.address = this->address_;
         resp.handle = ev.handle;
         resp.set_data(ev.data.get(), ev.len);
-        api_connection->send_message(resp);
+        [[maybe_unused]] bool sent = api_connection->send_message(resp);
       }
       break;
     case HostGattEvent::Kind::PAIRING_COMPLETE:
@@ -223,10 +225,10 @@ void BluetoothConnection::send_service_for_discovery_() {
     this->send_service_++;
   }
 
-  api_conn->send_message(resp);
+  [[maybe_unused]] bool sent = api_conn->send_message(resp);
 }
 
 }  // namespace bluetooth_proxy
 }  // namespace esphome
 
-#endif  // USE_ESP32 || USE_HOST
+#endif  // (USE_ESP32 || USE_HOST) && USE_BLUETOOTH_PROXY_CONNECTIONS

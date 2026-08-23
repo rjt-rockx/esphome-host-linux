@@ -1,5 +1,5 @@
 # System-level generic components on host:
-#   - linux_time: trust the kernel's wall clock (NTP-synced by the OS)
+#   - host time platform: trust the kernel's wall clock (NTP-synced by the OS)
 #   - homeassistant time platform: receive time from HA via the native API
 #   - restart switch: terminate the process (relies on systemd auto-restart)
 #   - copy: mirror an existing entity as a new one
@@ -22,7 +22,7 @@ logger:
   level: DEBUG
 
 time:
-  - platform: linux_time
+  - platform: host
     id: sys_time
     timezone: "Europe/London"
     on_time:

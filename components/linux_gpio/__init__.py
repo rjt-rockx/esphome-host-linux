@@ -3,6 +3,7 @@ import re
 
 from esphome import pins
 import esphome.codegen as cg
+from esphome.components.host_patches import ensure_patch_script
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_ID,
@@ -40,6 +41,7 @@ async def to_code(config):
     # (GPIOAlertThread); link against pthread. No external GPIO library is
     # used -- the implementation talks to the kernel chardev v2 ABI directly.
     cg.add_build_flag("-pthread")
+    ensure_patch_script()
 
 
 def _translate_pin(value):
@@ -101,6 +103,7 @@ async def linux_gpio_pin_to_code(config):
     # The edge-interrupt path uses a background std::thread; ensure pthread is
     # linked even if the user never declares a top-level `linux_gpio:` block.
     cg.add_build_flag("-pthread")
+    ensure_patch_script()
     return var
 
 

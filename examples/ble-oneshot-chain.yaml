@@ -1,0 +1,32 @@
+# on_scan_end restart probe: continuous: false plus an on_scan_end automation
+# that immediately calls start_scan(). The trigger fires from inside the stop
+# path, so the reentrant restart must be honored (IDLE published before the
+# trigger) — discovery start/stop cycles then chain back to back.
+esphome:
+  name: ble-oneshot-chain
+
+host:
+
+logger:
+  level: VERBOSE
+  logs:
+    esp32_ble_tracker: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32_ble_tracker:
+  id: tracker
+  scan_parameters:
+    continuous: false
+    duration: 2s
+  on_scan_end:
+    then:
+      - lambda: id(tracker).start_scan();
+
+binary_sensor:
+  - platform: ble_presence
+    name: "chain presence"
+    mac_address: A4:C1:38:00:00:10

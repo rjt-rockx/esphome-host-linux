@@ -1,5 +1,6 @@
 import esphome.codegen as cg
 from esphome.components import spi as _upstream_spi
+from esphome.components.host_patches import ensure_patch_script
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
 from esphome.core import CORE, CoroPriority, coroutine_with_priority
@@ -67,6 +68,9 @@ CONFIG_SCHEMA = cv.Schema(
 
 @coroutine_with_priority(CoroPriority.BUS)
 async def to_code(config):
+    # The shared pre-script also strips `final` off upstream's SPIComponent so
+    # LinuxSPIComponent can derive from it.
+    ensure_patch_script()
     cg.add_define("USE_SPI")
     cg.add_global(spi_ns.using)
     var = cg.new_Pvariable(config[CONF_ID])
