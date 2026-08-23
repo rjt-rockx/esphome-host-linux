@@ -261,8 +261,9 @@ void ESP32BLETracker::start_scan_() {
     this->scanner_thread_.join();
   this->stop_thread_ = false;
   this->thread_exited_ = false;
-  // Same clock as loop()'s `now`: a fresh millis() here would be ahead of the
-  // cached loop time and make the period check underflow.
+  // Provisional stamp, same clock as loop()'s `now` (a fresh millis() would be
+  // ahead of the cached loop time and underflow the period check); loop()
+  // re-anchors it when the backend is confirmed up (STARTING -> RUNNING).
   this->scan_period_start_ = App.get_loop_component_start_time();
   if (this->use_hci_backend_) {
     this->scanner_thread_ = std::thread([this] {
@@ -347,6 +348,10 @@ void ESP32BLETracker::loop() {
 
   // The worker confirmed the backend is up: STARTING becomes RUNNING.
   if (this->scanner_state_ == ScannerState::STARTING && this->scan_running_.load(std::memory_order_relaxed)) {
+    // Re-anchor the period here, not at the spawn: HCI open / the blocking
+    // StartDiscovery can be slow, and the startup time would otherwise eat
+    // into the first period (a one-shot scan could end almost immediately).
+    this->scan_period_start_ = now;
     this->set_scanner_state_(ScannerState::RUNNING);
   }
 
@@ -904,6 +909,58 @@ void ESP32BLETracker::lookup_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uin
   }
 }
 
+// Seed the address-type cache from Device1 objects that already exist in
+// BlueZ: created before we subscribed, they generate no InterfacesAdded, and
+// their later PropertiesChanged updates rarely carry AddressType — without
+// this a pre-existing random-address device would be reported as public.
+// Runs on the worker thread, after the signal subscriptions, so no device
+// slips between enumeration and subscription (a duplicate record is
+// harmless). Cache-only: no frames are emitted for these possibly-stale
+// BlueZ cache entries.
+void ESP32BLETracker::seed_addr_types_(sd_bus *bus) {
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  sd_bus_message *reply = nullptr;
+  int r = sd_bus_call_method(bus, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects", &err,
+                             &reply, "");
+  if (r < 0) {
+    ESP_LOGD(TAG, "D-Bus: GetManagedObjects failed: %s", err.message ? err.message : std::strerror(-r));
+    sd_bus_error_free(&err);
+    return;
+  }
+  // Reply is a{oa{sa{sv}}}: object path -> interface -> properties.
+  if (sd_bus_message_enter_container(reply, 'a', "{oa{sa{sv}}}") >= 0) {
+    for (;;) {
+      r = sd_bus_message_enter_container(reply, 'e', "oa{sa{sv}}");
+      if (r <= 0)
+        break;
+      const char *obj_path = nullptr;
+      sd_bus_message_read(reply, "o", &obj_path);
+      if (sd_bus_message_enter_container(reply, 'a', "{sa{sv}}") >= 0) {
+        for (;;) {
+          int r2 = sd_bus_message_enter_container(reply, 'e', "sa{sv}");
+          if (r2 <= 0)
+            break;
+          const char *iface = nullptr;
+          sd_bus_message_read(reply, "s", &iface);
+          if (iface != nullptr && std::strcmp(iface, "org.bluez.Device1") == 0) {
+            AdvFrame frame{};
+            if (this->parse_device1_props_(reply, frame))
+              this->record_addr_type_(frame.mac, frame.addr_type);
+          } else {
+            sd_bus_message_skip(reply, "a{sv}");
+          }
+          sd_bus_message_exit_container(reply);  // interface entry
+        }
+        sd_bus_message_exit_container(reply);  // interfaces array
+      }
+      sd_bus_message_exit_container(reply);  // object entry
+    }
+    sd_bus_message_exit_container(reply);  // objects array
+  }
+  sd_bus_error_free(&err);
+  sd_bus_message_unref(reply);
+}
+
 void ESP32BLETracker::dbus_scanner_thread_main_() {
   sd_bus *bus = nullptr;
   int r = sd_bus_open_system(&bus);
@@ -948,6 +1005,9 @@ void ESP32BLETracker::dbus_scanner_thread_main_() {
                       "InterfacesAdded", &ESP32BLETracker::on_interfaces_added_, this);
   sd_bus_match_signal(bus, &slot_changed, "org.bluez", nullptr, "org.freedesktop.DBus.Properties",
                       "PropertiesChanged", &ESP32BLETracker::on_properties_changed_, this);
+
+  // Learn the address types of devices BlueZ already knows about.
+  this->seed_addr_types_(bus);
 
   // StartDiscovery.
   {

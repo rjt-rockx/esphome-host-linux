@@ -115,3 +115,23 @@ def test_stop_from_on_scan_end_fires_once_per_boundary(bluez, run_host):
     fired = sum("scan end fired" in line for line in host.snapshot())
     assert fired == 1, f"on_scan_end fired {fired} times for one scan boundary"
     assert len(bluez.calls("StartDiscovery")) == 1, "stopped scanner restarted itself"
+
+
+def test_preexisting_random_device_addr_type_seeded(bluez, run_host):
+    # A Device1 created BEFORE the host connects generates no InterfacesAdded,
+    # and its later RSSI-only updates carry no AddressType. The scanner must
+    # seed its address-type cache from GetManagedObjects at startup so those
+    # updates keep the RANDOM type instead of decaying to PUBLIC.
+    # RSSI must exist at creation: dbusmock's UpdateProperties cannot add keys.
+    path = bluez.inject_device(
+        "D4:33:22:11:00:99",
+        {"AddressType": dbus.String("random"), "RSSI": dbus.Int16(-50)},
+    )
+    # ble-oneshot: a one-shot scan logs unclaimed devices (with address type)
+    # at DEBUG; the probe MAC differs from its presence sensor's.
+    host = run_host("ble-oneshot")
+    assert bluez.wait_for_call("StartDiscovery", timeout=20), "scan never started"
+    bluez.update_device(path, {"RSSI": dbus.Int16(-61)})
+    line = host.wait_for_log("Address Type:", timeout=10)
+    assert line is not None, "device update never dispatched/logged"
+    assert "RANDOM" in line, f"address type lost for pre-existing device: {line!r}"

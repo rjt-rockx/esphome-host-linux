@@ -289,6 +289,7 @@ class ESP32BLETracker : public Component {
   static int on_properties_changed_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
   void record_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t addr_type);
   void lookup_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t &addr_type) const;
+  void seed_addr_types_(::sd_bus *bus);
 
   std::string hci_device_name_{"hci0"};
   uint32_t scan_duration_s_{300};
