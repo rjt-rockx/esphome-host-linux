@@ -153,6 +153,44 @@ def _patch_seesaw_readbuf(path: Path) -> None:
     path.write_text(src.replace(needle, repl, 1))
 
 
+def _patch_seesaw_dump_summary(header: Path, source: Path) -> None:
+    """ESPHome 2026.8 replaced GPIOPin's std::string dump_summary() with a
+    buffer-based size_t dump_summary(char *, size_t). ssieb's out-of-tree
+    seesaw component still declares the old form, so its override no longer
+    compiles. Rewrite both declaration and definition; skip silently once the
+    upstream component catches up (needles vanish)."""
+    marker = "// PI_HOST_PATCHED_SEESAW_DUMP"
+    if header.exists():
+        src = header.read_text()
+        needle = "  std::string dump_summary() const override;"
+        if marker not in src and needle in src:
+            header.write_text(
+                src.replace(
+                    needle,
+                    "  size_t dump_summary(char *buffer, size_t len) const override;  " + marker,
+                    1,
+                )
+            )
+    if source.exists():
+        src = source.read_text()
+        needle = (
+            "std::string SeesawGPIOPin::dump_summary() const {\n"
+            '  return str_sprintf("%u via SeeSaw", this->pin_);\n'
+            "}"
+        )
+        if marker not in src and needle in src:
+            source.write_text(
+                src.replace(
+                    needle,
+                    marker + "\n"
+                    "size_t SeesawGPIOPin::dump_summary(char *buffer, size_t len) const {\n"
+                    '  return snprintf(buffer, len, "%u via SeeSaw", this->pin_);\n'
+                    "}",
+                    1,
+                )
+            )
+
+
 def _patch_all(_target, _source, _env):
     project_dir = Path(env.subst("$PROJECT_DIR"))  # type: ignore  # noqa: F821
 
@@ -163,6 +201,10 @@ def _patch_all(_target, _source, _env):
     _ensure_lwip_stubs(project_dir)
     _patch_host_ip_address(components_root / "network" / "ip_address.h")
     _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
+    _patch_seesaw_dump_summary(
+        components_root / "seesaw" / "seesaw.h",
+        components_root / "seesaw" / "seesaw.cpp",
+    )
     _patch_spi_final(components_root / "spi" / "spi.h")
 
     _patch(
