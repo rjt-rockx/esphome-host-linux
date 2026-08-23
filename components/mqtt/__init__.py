@@ -18,9 +18,9 @@ from pathlib import Path
 
 import esphome as _esphome
 import esphome.codegen as cg
+from esphome.components.host_patches import ensure_patch_script
 import esphome.config_validation as cv
 from esphome.core import CORE
-from esphome.helpers import copy_file_if_changed
 
 CODEOWNERS = ["@rjt-rockx"]
 
@@ -96,14 +96,4 @@ async def to_code(config):  # noqa: F811 — override upstream coroutine.
     # The pre-script is what actually drops upstream-mqtt sources and our
     # host backend into the build dir, after copy_src_tree has settled. It
     # also patches mqtt_client.{h,cpp} to use MQTTBackendHost.
-    script_dst = CORE.relative_build_path("patch_web_server.py")
-    script_src = (
-        Path(__file__).parent.parent
-        / "web_server_base"
-        / "patch_web_server.py.script"
-    )
-    if script_src.exists():
-        copy_file_if_changed(script_src, script_dst)
-        existing = CORE.platformio_options.get("extra_scripts", []) or []
-        if "pre:patch_web_server.py" not in existing:
-            CORE.add_platformio_option("extra_scripts", ["pre:patch_web_server.py"])
+    ensure_patch_script()

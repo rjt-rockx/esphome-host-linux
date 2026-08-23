@@ -9,6 +9,7 @@ import logging
 
 import esphome.codegen as cg
 from esphome.components import time as time_
+from esphome.components.host_patches import ensure_patch_script
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
 
@@ -34,6 +35,7 @@ async def to_code(config):
         "`platform: host`. linux_time still works but will be removed in a "
         "future release."
     )
+    ensure_patch_script()
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await time_.register_time(var, config)

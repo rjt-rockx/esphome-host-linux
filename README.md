@@ -26,6 +26,12 @@ examples use landed in 2026.6.
 - **`mqtt`** -- upstream component's own source is used as-is (again with small pre-script guard relaxations); the host backend wraps libmosquitto.
 - **BLE** -- the `esp32_ble_tracker` shadow is a real `ble_device_base` BLE hub for host, so stock BLE consumers (`ble_presence`, `ble_rssi`, `bthome_receiver`, `bluetooth_proxy`, the parsed `*_ble` sensors) register against it the same way they do on ESP32. Two backends: BlueZ over D-Bus (default; needs `bluetoothd`, no capabilities, coexists with other users of the adapter) and raw HCI sockets (`hci_backend: true`; byte-exact advertisements, needs `cap_net_admin,cap_net_raw` and an adapter not claimed by `bluetoothd`).
 
+**Build patches:** the pre-script mentioned above (web_server guards, SPI `final`, mqtt host backend, plus
+third-party fixes such as the inter-transaction delay ssieb's `seesaw` needs on the Pi) is registered by *every*
+component in this repository, so any config that uses at least one of them gets the patches. A config that uses
+**zero** repo components (e.g. only native `i2c:` plus third-party components like `seesaw`) never loads this
+repository's Python and cannot be patched automatically -- add an explicit `host_patches:` block to opt in.
+
 Tested on Pi 5 (Debian 13 trixie, kernel 6.12). CI also compiles every example on plain ubuntu-latest.
 
 ## Requirements

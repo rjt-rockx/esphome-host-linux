@@ -10,6 +10,7 @@ MCP23xxx GPIO expanders on host). Not auto-loaded, so it stays out of the
 compile path for setups that don't need it.
 """
 
+from esphome.components.host_patches import ensure_patch_script
 import esphome.config_validation as cv
 
 CODEOWNERS = ["@rjt-rockx"]
@@ -23,4 +24,4 @@ CONFIG_SCHEMA = cv.Schema({})
 
 
 async def to_code(_config):
-    pass
+    ensure_patch_script()

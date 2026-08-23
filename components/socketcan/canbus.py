@@ -24,6 +24,7 @@ import sys
 
 from esphome.components import canbus
 from esphome.components.canbus import CanbusComponent
+from esphome.components.host_patches import ensure_patch_script
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
@@ -70,6 +71,7 @@ CONFIG_SCHEMA = cv.All(
 
 
 async def to_code(config):
+    ensure_patch_script()
     var = cg.new_Pvariable(config[CONF_ID])
     await canbus.register_canbus(var, config)
     cg.add(var.set_interface(config[CONF_INTERFACE]))

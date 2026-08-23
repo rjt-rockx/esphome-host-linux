@@ -1,11 +1,9 @@
-from pathlib import Path
-
 import esphome.codegen as cg
 from esphome.components import spi as _upstream_spi
+from esphome.components.host_patches import ensure_patch_script
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
 from esphome.core import CORE, CoroPriority, coroutine_with_priority
-from esphome.helpers import copy_file_if_changed
 
 CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
@@ -68,23 +66,11 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
-def _install_spi_patch_script():
-    """Register the shared pre-script that strips `final` off upstream's SPIComponent
-    so LinuxSPIComponent can derive from it. Registration is idempotent and shared
-    with web_server_base, which installs the same script for its own patches."""
-    script_dst = CORE.relative_build_path("patch_web_server.py")
-    copy_file_if_changed(
-        Path(__file__).parent.parent / "web_server_base" / "patch_web_server.py.script",
-        script_dst,
-    )
-    existing = CORE.platformio_options.get("extra_scripts", []) or []
-    if "pre:patch_web_server.py" not in existing:
-        CORE.add_platformio_option("extra_scripts", ["pre:patch_web_server.py"])
-
-
 @coroutine_with_priority(CoroPriority.BUS)
 async def to_code(config):
-    _install_spi_patch_script()
+    # The shared pre-script also strips `final` off upstream's SPIComponent so
+    # LinuxSPIComponent can derive from it.
+    ensure_patch_script()
     cg.add_define("USE_SPI")
     cg.add_global(spi_ns.using)
     var = cg.new_Pvariable(config[CONF_ID])

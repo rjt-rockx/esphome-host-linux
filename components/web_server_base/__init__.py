@@ -7,15 +7,13 @@ Also neutralizes the cv.only_on(...) gate in `web_server` so the stock
 `web_server:` config block works unchanged on host.
 """
 
-from pathlib import Path
-
 import esphome.codegen as cg
+from esphome.components.host_patches import ensure_patch_script
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
 import esphome.final_validate as fv
 from esphome.core import CORE
 from esphome.coroutine import CoroPriority, coroutine_with_priority
-from esphome.helpers import copy_file_if_changed
 
 CODEOWNERS = ["@rjt-rockx", "@esphome/core"]
 DEPENDENCIES = ["network"]
@@ -109,8 +107,4 @@ async def to_code(config):
     cg.add_build_flag("-pthread")
     # Pre-script that injects USE_HOST branches into web_server.h /
     # list_entities.{h,cpp} before PIO compiles them. Idempotent.
-    script_dst = CORE.relative_build_path("patch_web_server.py")
-    copy_file_if_changed(Path(__file__).parent / "patch_web_server.py.script", script_dst)
-    existing = CORE.platformio_options.get("extra_scripts", []) or []
-    if "pre:patch_web_server.py" not in existing:
-        CORE.add_platformio_option("extra_scripts", ["pre:patch_web_server.py"])
+    ensure_patch_script()

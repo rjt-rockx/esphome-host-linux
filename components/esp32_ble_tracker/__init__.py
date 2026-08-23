@@ -12,11 +12,10 @@ missing-tracker registry key on, so both work unmodified against this shadow.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import esphome.codegen as cg
 from esphome.components import ble_device_base
 from esphome.components.ble_device_base import automation as ble_automation
+from esphome.components.host_patches import ensure_patch_script
 from esphome.components.const import (
     CONF_ON_SCAN_END,
     CONF_SCAN_PARAMETERS,
@@ -36,7 +35,6 @@ from esphome.const import (
     CONF_SERVICE_UUID,
 )
 from esphome.core import CORE
-from esphome.helpers import copy_file_if_changed
 from esphome.types import ConfigType
 
 CODEOWNERS = ["@rjt-rockx"]
@@ -167,23 +165,7 @@ async def to_code(config: ConfigType) -> None:
         # libsystemd provides sd-bus for the D-Bus backend. (The raw-HCI path
         # needs no extra libs.)
         cg.add_build_flag("-lsystemd")
-        _ensure_ble_patch_script()
-
-
-def _ensure_ble_patch_script() -> None:
-    """Copy patch_web_server.py.script into the build dir and register it as a
-    pre-script. Idempotent: skips re-registering if already present."""
-    script_src = (
-        Path(__file__).parent.parent / "web_server_base" / "patch_web_server.py.script"
-    )
-    if not script_src.exists():
-        return
-    script_dst = CORE.relative_build_path("patch_web_server.py")
-    copy_file_if_changed(script_src, script_dst)
-    existing = CORE.platformio_options.get("extra_scripts", []) or []
-    if "pre:patch_web_server.py" in existing:
-        return
-    CORE.add_platformio_option("extra_scripts", ["pre:patch_web_server.py"])
+        ensure_patch_script()
 
 
 async def register_ble_device(var, config):

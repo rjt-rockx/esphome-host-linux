@@ -7,6 +7,7 @@ machinery. The C++ side centers on the ESPBTUUID type in ble_uuid.h/cpp.
 
 import esphome.codegen as cg
 from esphome.components import ble_device_base
+from esphome.components.host_patches import ensure_patch_script
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
 from esphome.core import CORE
@@ -66,3 +67,4 @@ async def to_code(config):
     if CORE.is_host:
         cg.add_build_flag("-pthread")
         cg.add_build_flag("-lsystemd")
+        ensure_patch_script()
