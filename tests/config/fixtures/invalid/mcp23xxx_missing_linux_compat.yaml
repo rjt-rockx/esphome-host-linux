@@ -1,0 +1,26 @@
+# EXPECT_ERROR: linux_compat
+esphome:
+  name: mcp-no-compat
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+
+i2c:
+  id: bus_a
+  device: /dev/i2c-1
+
+mcp23017:
+  - id: relay_bank
+    address: 0x20
+
+switch:
+  - platform: gpio
+    name: "Relay"
+    pin:
+      mcp23xxx: relay_bank
+      number: 0
+      mode:
+        output: true

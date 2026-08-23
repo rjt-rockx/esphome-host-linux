@@ -11,31 +11,15 @@ compile path for setups that don't need it.
 """
 
 import esphome.config_validation as cv
-from esphome import final_validate as fv
-from esphome.core import CORE
 
 CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = ["host"]
 
 CONFIG_SCHEMA = cv.Schema({})
 
-
-def _final_validate(config):
-    """Fail with a clear hint rather than a link-time vtable error when the
-    upstream components needing our shims are present without linux_compat."""
-    if not CORE.is_host:
-        return config
-    full = fv.full_config.get()
-    if "mcp23xxx_base" in CORE.loaded_integrations and "linux_compat" not in full:
-        raise cv.Invalid(
-            "MCP23xxx GPIO expanders on the host platform need the `linux_compat:` "
-            "component loaded to supply missing upstream symbol definitions. "
-            "Add an empty `linux_compat:` block to your config."
-        )
-    return config
-
-
-FINAL_VALIDATE_SCHEMA = _final_validate
+# The "you forgot linux_compat" hint lives in the mcp23xxx_base shadow: ESPHome
+# only runs FINAL_VALIDATE_SCHEMA for components present in the config, so a
+# check here could never fire for the configs that need it.
 
 
 async def to_code(_config):
