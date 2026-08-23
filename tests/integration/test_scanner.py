@@ -81,3 +81,19 @@ def test_startup_failure_reports_failed_not_completed(bluez, run_host):
     joined = "\n".join(host.snapshot())
     assert "Scan stopped" not in joined, "startup failure was reported as a completed scan"
     assert host.proc.poll() is None, "host crashed on scanner startup failure"
+
+
+def test_on_scan_end_can_restart_one_shot(bluez, run_host):
+    # The on_scan_end automation in ble-oneshot-chain calls start_scan() while
+    # the trigger runs inside the stop path. IDLE must be published before the
+    # trigger fires, or the reentrant restart sees RUNNING and is refused —
+    # with the fix, scan periods chain back to back.
+    import time
+
+    run_host("ble-oneshot-chain")
+    assert bluez.wait_for_call("StartDiscovery", timeout=20), "scan never started"
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline and len(bluez.calls("StartDiscovery")) < 3:
+        time.sleep(0.2)
+    assert len(bluez.calls("StartDiscovery")) >= 3, "on_scan_end start_scan() did not chain scan periods"
+    assert len(bluez.calls("StopDiscovery")) >= 2, "chained periods did not stop the backend in between"

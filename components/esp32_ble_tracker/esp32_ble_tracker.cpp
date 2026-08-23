@@ -245,7 +245,10 @@ void ESP32BLETracker::start_scan() {
 }
 
 void ESP32BLETracker::stop_scan() {
-  this->scan_continuous_ = false;
+  // Unlike core's trackers, the configured continuous mode is NOT latched off
+  // here: host stops are synchronous and loop() never auto-restarts an idle
+  // scanner, so the stop sticks on its own and a later start_scan() resumes
+  // in the configured mode.
   if (this->scanner_state_ != ScannerState::STARTING && this->scanner_state_ != ScannerState::RUNNING)
     return;
   this->stop_scan_();
@@ -290,9 +293,12 @@ void ESP32BLETracker::stop_scan_() {
   // so no advertisement is delivered after on_scan_end has fired.
   this->drain_queue_(App.get_loop_component_start_time());
   ESP_LOGD(TAG, "Scan stopped");
+  // Publish IDLE BEFORE the trigger so an on_scan_end automation can call
+  // start_scan() reentrantly (it would see RUNNING and refuse otherwise), and
+  // never touch the state afterwards so such a restart's STARTING survives.
+  this->set_scanner_state_(ScannerState::IDLE);
   if (was_running)
     this->fire_scan_end_();
-  this->set_scanner_state_(ScannerState::IDLE);
 }
 
 void ESP32BLETracker::fire_scan_end_() {
@@ -352,10 +358,12 @@ void ESP32BLETracker::loop() {
       this->scanner_thread_.join();
     this->thread_exited_ = false;
     this->drain_queue_(now);
+    ESP_LOGW(TAG, "Scan worker exited %s; scanner FAILED", ran ? "mid-scan" : "during startup");
+    // FAILED before the trigger, so an on_scan_end automation may restart the
+    // scan reentrantly (and its STARTING is not clobbered afterwards).
+    this->set_scanner_state_(ScannerState::FAILED);
     if (ran)
       this->fire_scan_end_();
-    ESP_LOGW(TAG, "Scan worker exited %s; scanner FAILED", ran ? "mid-scan" : "during startup");
-    this->set_scanner_state_(ScannerState::FAILED);
   }
 
   // Period timer, mirroring core's trackers: a continuous scan fires
