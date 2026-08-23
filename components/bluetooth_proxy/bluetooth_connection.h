@@ -1,5 +1,7 @@
 #pragma once
-#if defined(USE_ESP32) || defined(USE_HOST)
+#include "esphome/core/defines.h"
+
+#if (defined(USE_ESP32) || defined(USE_HOST)) && defined(USE_BLUETOOTH_PROXY_CONNECTIONS)
 
 #include "esphome/components/esp32_ble_client/ble_client_base.h"
 
@@ -57,4 +59,4 @@ class BluetoothConnection final : public esp32_ble_client::BLEClientBase {
 }  // namespace bluetooth_proxy
 }  // namespace esphome
 
-#endif  // USE_ESP32 || USE_HOST
+#endif  // (USE_ESP32 || USE_HOST) && USE_BLUETOOTH_PROXY_CONNECTIONS

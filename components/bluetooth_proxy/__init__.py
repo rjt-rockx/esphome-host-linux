@@ -61,11 +61,18 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     cg.add(var.set_active(config[CONF_ACTIVE]))
-    # The proxy is a passive advertisement listener.
-    await esp32_ble_tracker.register_ble_device(var, config)
+    hub = await cg.get_variable(config[esp32_ble_tracker.CONF_ESP32_BLE_ID])
+    cg.add(var.set_ble_hub(hub))
 
     connections = config.get(CONF_CONNECTIONS, [])
-    cg.add_define("BLUETOOTH_PROXY_MAX_CONNECTIONS", max(len(connections), 1))
+    # Sized exactly as upstream: the api component uses this for
+    # BluetoothConnectionsFreeResponse.allocated, and 0 is a valid count for an
+    # advertisement-only proxy.
+    cg.add_define("BLUETOOTH_PROXY_MAX_CONNECTIONS", len(connections))
+    if connections:
+        # Gates the whole GATT message family in the api component; without it
+        # api::BluetoothDeviceRequest and friends do not exist.
+        cg.add_define("USE_BLUETOOTH_PROXY_CONNECTIONS")
     cg.add_define("BLUETOOTH_PROXY_ADVERTISEMENT_BATCH_SIZE", 16)
 
     for connection_conf in connections:

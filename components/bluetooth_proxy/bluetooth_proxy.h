@@ -12,10 +12,12 @@
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
 
+#ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
 #include "bluetooth_connection.h"
+#endif
 
 #ifndef BLUETOOTH_PROXY_MAX_CONNECTIONS
-#define BLUETOOTH_PROXY_MAX_CONNECTIONS 3
+#define BLUETOOTH_PROXY_MAX_CONNECTIONS 0
 #endif
 #ifndef BLUETOOTH_PROXY_ADVERTISEMENT_BATCH_SIZE
 #define BLUETOOTH_PROXY_ADVERTISEMENT_BATCH_SIZE 16
@@ -47,19 +49,17 @@ enum BluetoothProxySubscriptionFlag : uint32_t {
   SUBSCRIPTION_RAW_ADVERTISEMENTS = 1 << 0,
 };
 
-class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
-                             public esp32_ble_tracker::BLEScannerStateListener,
-                             public Component {
+class BluetoothProxy final : public esp32_ble_tracker::BLEScannerStateListener, public Component {
   friend class BluetoothConnection;
 
  public:
   BluetoothProxy();
-  bool parse_device(const esp32_ble_tracker::ESPBTDevice &device) override;
   void on_scanner_state(esp32_ble_tracker::ScannerState state) override;
   void dump_config() override;
   void setup() override;
   void loop() override;
 
+#ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   void register_connection(BluetoothConnection *connection) {
     if (this->connection_count_ < BLUETOOTH_PROXY_MAX_CONNECTIONS) {
       this->connections_[this->connection_count_++] = connection;
@@ -75,12 +75,14 @@ class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
   void bluetooth_gatt_send_services(const api::BluetoothGATTGetServicesRequest &msg);
   void bluetooth_gatt_notify(const api::BluetoothGATTNotifyRequest &msg);
   void bluetooth_set_connection_params(const api::BluetoothSetConnectionParamsRequest &msg);
+#endif  // USE_BLUETOOTH_PROXY_CONNECTIONS
   void bluetooth_scanner_set_mode(bool active);
 
   void subscribe_api_connection(api::APIConnection *api_connection, uint32_t flags);
   void unsubscribe_api_connection(api::APIConnection *api_connection);
   api::APIConnection *get_api_connection() { return this->api_connection_; }
 
+#ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   void send_device_connection(uint64_t address, bool connected, uint16_t mtu = 0, esp_err_t error = ESP_OK);
   void send_connections_free();
   void send_connections_free(api::APIConnection *api_connection);
@@ -89,7 +91,9 @@ class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
   void send_device_pairing(uint64_t address, bool paired, esp_err_t error = ESP_OK);
   void send_device_unpairing(uint64_t address, bool success, esp_err_t error = ESP_OK);
   void send_device_clear_cache(uint64_t address, bool success, esp_err_t error = ESP_OK);
+#endif  // USE_BLUETOOTH_PROXY_CONNECTIONS
 
+  void set_ble_hub(esp32_ble_tracker::ESP32BLETracker *hub) { this->hub_ = hub; }
   void set_active(bool active) { this->active_ = active; }
   bool has_active() { return this->active_; }
 
@@ -100,6 +104,7 @@ class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
     flags |= BluetoothProxyFeature::FEATURE_PASSIVE_SCAN;
     flags |= BluetoothProxyFeature::FEATURE_RAW_ADVERTISEMENTS;
     flags |= BluetoothProxyFeature::FEATURE_STATE_AND_MODE;
+#ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
     if (this->active_) {
       flags |= BluetoothProxyFeature::FEATURE_ACTIVE_CONNECTIONS;
       flags |= BluetoothProxyFeature::FEATURE_REMOTE_CACHING;
@@ -107,35 +112,50 @@ class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
       flags |= BluetoothProxyFeature::FEATURE_CACHE_CLEARING;
       flags |= BluetoothProxyFeature::FEATURE_CONNECTION_PARAMS_SETTING;
     }
+#endif
     return flags;
   }
 
-  // The adapter MAC isn't readily exposed without a BlueZ query; HA only uses
-  // this cosmetically, so report empty.
-  void get_bluetooth_mac_address_pretty(std::span<char, 18> output) { output[0] = '\0'; }
+  /// Adapter address the hub read at setup, formatted for the client. Empty
+  /// when the adapter address could not be read.
+  void get_bluetooth_mac_address_pretty(std::span<char, MAC_ADDRESS_PRETTY_BUFFER_SIZE> output) {
+    uint8_t mac[MAC_ADDRESS_SIZE] = {};
+    this->hub_->get_adapter_mac(mac);
+    if (mac_address_is_valid(mac)) {
+      format_mac_addr_upper(mac, output.data());
+    } else {
+      output[0] = '\0';
+    }
+  }
 
  protected:
   void send_bluetooth_scanner_state_(esp32_ble_tracker::ScannerState state);
   void flush_pending_advertisements_() {
     if (this->response_.advertisements_len == 0)
       return;
-    this->api_connection_->send_message(this->response_);
+    [[maybe_unused]] bool sent = this->api_connection_->send_message(this->response_);
     this->response_.advertisements_len = 0;
   }
   void log_advertisement_flush_();
+  void on_raw_advertisement_(const ble_device_base::RawAdvertisement &raw);
+#ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
   BluetoothConnection *get_connection_(uint64_t address, bool reserve);
   void handle_gatt_not_connected_(uint64_t address, uint16_t handle, const char *action, const char *type);
   void log_not_connected_gatt_(const char *action, const char *type);
   void log_connection_request_ignored_(BluetoothConnection *connection, espbt::ClientState state);
   void log_connection_info_(BluetoothConnection *connection, const char *message);
+#endif
 
+  esp32_ble_tracker::ESP32BLETracker *hub_{nullptr};
   api::APIConnection *api_connection_{nullptr};
-  std::array<BluetoothConnection *, BLUETOOTH_PROXY_MAX_CONNECTIONS> connections_{};
   api::BluetoothLERawAdvertisementsResponse response_;
   uint32_t last_advertisement_flush_time_{0};
+#ifdef USE_BLUETOOTH_PROXY_CONNECTIONS
+  std::array<BluetoothConnection *, BLUETOOTH_PROXY_MAX_CONNECTIONS> connections_{};
   api::BluetoothConnectionsFreeResponse connections_free_response_;
-  bool active_{false};
   uint8_t connection_count_{0};
+#endif
+  bool active_{false};
   bool configured_scan_active_{false};
 };
 
