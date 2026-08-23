@@ -36,10 +36,13 @@ Tested on Pi 5 (Debian 13 trixie, kernel 6.12). CI also compiles every example o
 
 ## Requirements
 
-Pi OS Bookworm, Debian 12, or any distro with the same toolchain. The `scripts/pi-bootstrap.sh` script handles the lot:
+Pi OS based on Debian 13 (trixie), or any distro with Python >= 3.12 (ESPHome >= 2026.7 dropped
+Python 3.11, so stock Bookworm/Debian 12 needs a newer Python first -- `pi-bootstrap.sh` checks and
+tells you). The script handles the lot:
 
 - `libmosquitto-dev`, `bluez`, `libcap2-bin`, `build-essential` (no lgpio needed -- `linux_gpio` talks to the kernel GPIO chardev directly)
-- `libsystemd-dev` -- only for the BLE D-Bus backend, which uses sd-bus. The raw-HCI backend needs nothing extra.
+- `libsystemd-dev` -- required for any BLE build: the D-Bus backend uses sd-bus, and it is compiled
+  and linked even when the raw-HCI backend is selected at runtime.
 - User in the `gpio`, `i2c`, `spi`, `dialout` groups
 - ESPHome installed in a venv
 
