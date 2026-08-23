@@ -1,5 +1,7 @@
 # Upstream web_server: on host. The web_server_base external component shims
-# AsyncWebServer over POSIX sockets so the stock component runs unmodified.
+# AsyncWebServer over POSIX sockets, so the stock component's own source builds
+# on host (a build pre-script only relaxes a few platform guards in it).
+# auth: type: digest is not supported here; basic auth is.
 
 esphome:
   name: pi-web-test
