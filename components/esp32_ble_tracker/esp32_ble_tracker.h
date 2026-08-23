@@ -21,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // sd-bus types appear in the D-Bus backend method signatures below. Include the
@@ -269,6 +270,7 @@ class ESP32BLETracker : public Component {
   // Scan lifecycle (all called on the main loop).
   void start_scan_();
   void stop_scan_();
+  void drain_queue_(uint32_t now);
   void fire_scan_end_();
   void set_scanner_state_(ScannerState state);
 
@@ -285,6 +287,8 @@ class ESP32BLETracker : public Component {
   bool parse_device1_props_(::sd_bus_message *m, AdvFrame &frame);
   static int on_interfaces_added_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
   static int on_properties_changed_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
+  void record_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t addr_type);
+  void lookup_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t &addr_type) const;
 
   std::string hci_device_name_{"hci0"};
   uint32_t scan_duration_s_{300};
@@ -306,9 +310,14 @@ class ESP32BLETracker : public Component {
   std::atomic<bool> stop_thread_{false};
   std::atomic<bool> scan_running_{false};
   // Set by the worker when it returns (stop honored, backend failure); the
-  // main loop reaps the thread and reports IDLE.
+  // main loop reaps the thread and reports FAILED (or IDLE on request).
   std::atomic<bool> thread_exited_{false};
   ScannerState scanner_state_{ScannerState::IDLE};
+  // Address types seen in InterfacesAdded, keyed by MAC packed into a u64:
+  // PropertiesChanged updates rarely carry AddressType, so without this cache
+  // every update would flip a random-address device back to public. Only
+  // touched from the D-Bus worker thread.
+  std::vector<std::pair<uint64_t, uint8_t>> dbus_addr_types_;
   int hci_fd_{-1};
   int hci_dev_id_{-1};
 

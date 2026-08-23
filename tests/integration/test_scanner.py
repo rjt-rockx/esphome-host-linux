@@ -65,3 +65,19 @@ def test_oneshot_scan_stops_and_restarts(bluez, run_host):
     while time.monotonic() < deadline and len(bluez.calls("StopDiscovery")) < 2:
         time.sleep(0.2)
     assert len(bluez.calls("StopDiscovery")) >= 2, "restarted scan never stopped"
+
+
+def test_startup_failure_reports_failed_not_completed(bluez, run_host):
+    # No adapter: StartDiscovery fails and the worker exits during startup. The
+    # scanner must report FAILED — not a "Scan stopped" / on_scan_end sequence
+    # that would look like a successful completed scan.
+    import time
+
+    bluez.remove_adapter()
+    host = run_host("ble-scanner")
+    assert host.wait_for_log("StartDiscovery failed", timeout=20), "no startup failure logged"
+    assert host.wait_for_log("scanner FAILED", timeout=10), "FAILED state never reported"
+    time.sleep(1.0)
+    joined = "\n".join(host.snapshot())
+    assert "Scan stopped" not in joined, "startup failure was reported as a completed scan"
+    assert host.proc.poll() is None, "host crashed on scanner startup failure"

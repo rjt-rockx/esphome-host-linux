@@ -51,8 +51,11 @@ constexpr uint16_t OCF_LE_SET_SCAN_ENABLE = 0x000c;
 constexpr uint16_t OGF_LE_CTL = 0x08;
 
 // AD types emitted by the D-Bus re-encoder.
+constexpr uint8_t AD_INCOMPLETE_LIST_UUID16 = 0x02;
 constexpr uint8_t AD_COMPLETE_LIST_UUID16 = 0x03;
+constexpr uint8_t AD_INCOMPLETE_LIST_UUID32 = 0x04;
 constexpr uint8_t AD_COMPLETE_LIST_UUID32 = 0x05;
+constexpr uint8_t AD_INCOMPLETE_LIST_UUID128 = 0x06;
 constexpr uint8_t AD_COMPLETE_LIST_UUID128 = 0x07;
 constexpr uint8_t AD_COMPLETE_LOCAL_NAME = 0x09;
 constexpr uint8_t AD_TX_POWER_LEVEL = 0x0a;
@@ -236,14 +239,14 @@ void ESP32BLETracker::setup() {
 }
 
 void ESP32BLETracker::start_scan() {
-  if (this->scanner_state_ == ScannerState::RUNNING)
+  if (this->scanner_state_ == ScannerState::STARTING || this->scanner_state_ == ScannerState::RUNNING)
     return;
   this->start_scan_();
 }
 
 void ESP32BLETracker::stop_scan() {
   this->scan_continuous_ = false;
-  if (this->scanner_state_ != ScannerState::RUNNING)
+  if (this->scanner_state_ != ScannerState::STARTING && this->scanner_state_ != ScannerState::RUNNING)
     return;
   this->stop_scan_();
 }
@@ -269,10 +272,13 @@ void ESP32BLETracker::start_scan_() {
       this->thread_exited_ = true;
     });
   }
-  this->set_scanner_state_(ScannerState::RUNNING);
+  // RUNNING is published by loop() once the worker reports the backend is
+  // actually up (scan_running_); a startup failure becomes FAILED instead.
+  this->set_scanner_state_(ScannerState::STARTING);
 }
 
 void ESP32BLETracker::stop_scan_() {
+  const bool was_running = this->scan_running_.load(std::memory_order_relaxed);
   this->stop_thread_ = true;
   // The worker notices within one poll interval (200 ms); join so the backend
   // is fully stopped (StopDiscovery / scan-disable sent) before IDLE is
@@ -280,8 +286,12 @@ void ESP32BLETracker::stop_scan_() {
   if (this->scanner_thread_.joinable())
     this->scanner_thread_.join();
   this->thread_exited_ = false;
+  // Dispatch frames the worker enqueued between loop()'s drain and the join,
+  // so no advertisement is delivered after on_scan_end has fired.
+  this->drain_queue_(App.get_loop_component_start_time());
   ESP_LOGD(TAG, "Scan stopped");
-  this->fire_scan_end_();
+  if (was_running)
+    this->fire_scan_end_();
   this->set_scanner_state_(ScannerState::IDLE);
 }
 
@@ -319,33 +329,33 @@ void ESP32BLETracker::dump_config() {
 void ESP32BLETracker::loop() {
   const uint32_t now = App.get_loop_component_start_time();
 
-  std::deque<AdvFrame> drained;
-  {
-    std::lock_guard<std::mutex> g(this->queue_mu_);
-    drained.swap(this->queue_);
-  }
-  // Log unclaimed devices only on one-shot scans; a continuous scan would spam.
-  const char *log_tag = this->scan_continuous_ ? nullptr : TAG;
-  for (const auto &f : drained) {
-    if (f.evt_type == EVT_TYPE_MERGED) {
-      this->dispatcher_.dispatch(f.mac, f.rssi, f.addr_type, f.data, f.len, false, log_tag);
-    } else if (f.evt_type == SCAN_RSP) {
-      this->merger_.submit_scan_rsp(f.mac, f.rssi, f.addr_type, f.data, f.len);
-    } else if (this->scan_active_ && (f.evt_type == ADV_IND || f.evt_type == ADV_SCAN_IND)) {
-      this->merger_.stash_adv(f.mac, f.rssi, f.addr_type, f.data, f.len, now);
-    } else {
-      this->dispatcher_.dispatch(f.mac, f.rssi, f.addr_type, f.data, f.len, false, log_tag);
-    }
-  }
+  this->drain_queue_(now);
   // Deliver held advertisements whose scan response never arrived.
   if (!this->merger_.empty())
     this->merger_.sweep(now);
 
-  // Reconcile: the worker exited on its own (backend failed to start, or a
-  // fatal read error killed a running scan). Reap it and report IDLE so a
-  // later start_scan() can retry.
-  if (this->scanner_state_ == ScannerState::RUNNING && this->thread_exited_.load(std::memory_order_relaxed)) {
-    this->stop_scan_();
+  // The worker confirmed the backend is up: STARTING becomes RUNNING.
+  if (this->scanner_state_ == ScannerState::STARTING && this->scan_running_.load(std::memory_order_relaxed)) {
+    this->set_scanner_state_(ScannerState::RUNNING);
+  }
+
+  // Reconcile: the worker exited on its own. Reap it and report FAILED (not a
+  // requested stop) so listeners see the difference from a completed scan; a
+  // later start_scan() may retry. A scan that had been running still delivers
+  // what it collected and ends its period; a startup failure (no adapter,
+  // D-Bus unavailable, StartDiscovery rejected) never scanned, so no
+  // on_scan_end fires for it.
+  if (this->thread_exited_.load(std::memory_order_relaxed) &&
+      (this->scanner_state_ == ScannerState::STARTING || this->scanner_state_ == ScannerState::RUNNING)) {
+    const bool ran = this->scanner_state_ == ScannerState::RUNNING;
+    if (this->scanner_thread_.joinable())
+      this->scanner_thread_.join();
+    this->thread_exited_ = false;
+    this->drain_queue_(now);
+    if (ran)
+      this->fire_scan_end_();
+    ESP_LOGW(TAG, "Scan worker exited %s; scanner FAILED", ran ? "mid-scan" : "during startup");
+    this->set_scanner_state_(ScannerState::FAILED);
   }
 
   // Period timer, mirroring core's trackers: a continuous scan fires
@@ -367,6 +377,30 @@ void ESP32BLETracker::loop() {
   if (!this->clients_.empty() && this->state_version_ != this->last_state_version_) {
     this->last_state_version_ = this->state_version_;
     this->try_promote_discovered_clients_();
+  }
+}
+
+// Dispatch every frame the worker enqueued so far. Runs on the main loop; also
+// called from stop_scan_() after the worker is joined, so late frames are
+// delivered BEFORE on_scan_end fires.
+void ESP32BLETracker::drain_queue_(uint32_t now) {
+  std::deque<AdvFrame> drained;
+  {
+    std::lock_guard<std::mutex> g(this->queue_mu_);
+    drained.swap(this->queue_);
+  }
+  // Log unclaimed devices only on one-shot scans; a continuous scan would spam.
+  const char *log_tag = this->scan_continuous_ ? nullptr : TAG;
+  for (const auto &f : drained) {
+    if (f.evt_type == EVT_TYPE_MERGED) {
+      this->dispatcher_.dispatch(f.mac, f.rssi, f.addr_type, f.data, f.len, false, log_tag);
+    } else if (f.evt_type == SCAN_RSP) {
+      this->merger_.submit_scan_rsp(f.mac, f.rssi, f.addr_type, f.data, f.len);
+    } else if (this->scan_active_ && (f.evt_type == ADV_IND || f.evt_type == ADV_SCAN_IND)) {
+      this->merger_.stash_adv(f.mac, f.rssi, f.addr_type, f.data, f.len, now);
+    } else {
+      this->dispatcher_.dispatch(f.mac, f.rssi, f.addr_type, f.data, f.len, false, log_tag);
+    }
   }
 }
 
@@ -677,8 +711,10 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
     } else if (std::strcmp(key, "AddressType") == 0) {
       const char *type = nullptr;
       sd_bus_message_read(m, "v", "s", &type);
-      if (type != nullptr && std::strcmp(type, "random") == 0)
-        frame.addr_type = ble_device_base::BLE_ADDR_TYPE_RANDOM;
+      if (type != nullptr) {
+        frame.addr_type = std::strcmp(type, "random") == 0 ? ble_device_base::BLE_ADDR_TYPE_RANDOM
+                                                           : ble_device_base::BLE_ADDR_TYPE_PUBLIC;
+      }
     } else if (std::strcmp(key, "Name") == 0) {
       const char *name_str = nullptr;
       sd_bus_message_read(m, "v", "s", &name_str);
@@ -797,19 +833,22 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
   for (const auto &el : data_elements)
     ad_append(frame.data, frame.len, sizeof(frame.data), el.type, el.payload.data(), el.payload.size());
   // A UUID list that no longer fits whole is trimmed to as many complete
-  // entries as fit rather than dropped.
-  auto append_uuid_list = [&frame](uint8_t type, const std::vector<uint8_t> &packed, size_t width) {
+  // entries as fit rather than dropped — and a trimmed list must not claim
+  // completeness, so it is emitted with the incomplete-list AD type.
+  auto append_uuid_list = [&frame](uint8_t complete_type, uint8_t incomplete_type,
+                                   const std::vector<uint8_t> &packed, size_t width) {
     if (packed.empty())
       return;
     size_t avail = sizeof(frame.data) - frame.len;
     if (avail < 2 + width)
       return;
     size_t n = std::min(packed.size(), ((avail - 2) / width) * width);
+    uint8_t type = n < packed.size() ? incomplete_type : complete_type;
     ad_append(frame.data, frame.len, sizeof(frame.data), type, packed.data(), n);
   };
-  append_uuid_list(AD_COMPLETE_LIST_UUID16, uuid16, 2);
-  append_uuid_list(AD_COMPLETE_LIST_UUID32, uuid32, 4);
-  append_uuid_list(AD_COMPLETE_LIST_UUID128, uuid128, 16);
+  append_uuid_list(AD_COMPLETE_LIST_UUID16, AD_INCOMPLETE_LIST_UUID16, uuid16, 2);
+  append_uuid_list(AD_COMPLETE_LIST_UUID32, AD_INCOMPLETE_LIST_UUID32, uuid32, 4);
+  append_uuid_list(AD_COMPLETE_LIST_UUID128, AD_INCOMPLETE_LIST_UUID128, uuid128, 16);
   if (have_appearance) {
     uint8_t v[2] = {static_cast<uint8_t>(appearance & 0xff), static_cast<uint8_t>(appearance >> 8)};
     ad_append(frame.data, frame.len, sizeof(frame.data), AD_APPEARANCE, v, sizeof(v));
@@ -821,6 +860,35 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
               reinterpret_cast<const uint8_t *>(name.c_str()), name.size());
   }
   return have_address;
+}
+
+// MAC packed into a u64 for the address-type cache key.
+static uint64_t mac_key(const uint8_t mac[MAC_ADDRESS_SIZE]) {
+  uint64_t key = 0;
+  for (int i = 0; i < MAC_ADDRESS_SIZE; i++)
+    key = (key << 8) | mac[i];
+  return key;
+}
+
+void ESP32BLETracker::record_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t addr_type) {
+  const uint64_t key = mac_key(mac);
+  for (auto &entry : this->dbus_addr_types_) {
+    if (entry.first == key) {
+      entry.second = addr_type;
+      return;
+    }
+  }
+  this->dbus_addr_types_.emplace_back(key, addr_type);
+}
+
+void ESP32BLETracker::lookup_addr_type_(const uint8_t mac[MAC_ADDRESS_SIZE], uint8_t &addr_type) const {
+  const uint64_t key = mac_key(mac);
+  for (const auto &entry : this->dbus_addr_types_) {
+    if (entry.first == key) {
+      addr_type = entry.second;
+      return;
+    }
+  }
 }
 
 void ESP32BLETracker::dbus_scanner_thread_main_() {
@@ -929,8 +997,11 @@ int ESP32BLETracker::on_interfaces_added_(sd_bus_message *m, void *userdata, sd_
     if (iface != nullptr && std::strcmp(iface, "org.bluez.Device1") == 0) {
       AdvFrame frame{};
       frame.evt_type = EVT_TYPE_MERGED;
-      if (self->parse_device1_props_(m, frame))
+      if (self->parse_device1_props_(m, frame)) {
+        // Remember the address type: PropertiesChanged updates rarely repeat it.
+        self->record_addr_type_(frame.mac, frame.addr_type);
         self->enqueue_frame_(frame);
+      }
     } else {
       sd_bus_message_skip(m, "a{sv}");
     }
@@ -969,8 +1040,14 @@ int ESP32BLETracker::on_properties_changed_(sd_bus_message *m, void *userdata, s
   if (!have_address)
     return 0;
 
-  // Reuse the a{sv} parser for the changed-properties dict (same signature).
+  // Changed-properties dicts rarely repeat AddressType, so seed it from the
+  // cache filled at InterfacesAdded; otherwise every RSSI-only update would
+  // flip a random-address device back to public.
+  self->lookup_addr_type_(frame.mac, frame.addr_type);
+  // Reuse the a{sv} parser for the changed-properties dict (same signature);
+  // it overrides the seeded address type if the signal does carry one.
   self->parse_device1_props_(m, frame);
+  self->record_addr_type_(frame.mac, frame.addr_type);
   self->enqueue_frame_(frame);
   return 0;
 }
