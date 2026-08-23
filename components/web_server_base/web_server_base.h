@@ -48,9 +48,18 @@ class MiddlewareHandler : public AsyncWebHandler {
 };
 
 #ifdef USE_WEBSERVER_AUTH
+// All fields point to string literals in generated code; nothing is copied.
 struct Credentials {
-  std::string username;
-  std::string password;
+#if USE_ESP32 || defined(USE_WEBSERVER_AUTH_DIGEST)
+  const char *username{nullptr};
+  const char *password{nullptr};
+  bool is_set() const { return username != nullptr; }
+#else
+  // base64("username:password"), precomputed at codegen time. The header payload is
+  // compared against this hash rather than re-encoding per request.
+  const char *basic_auth_hash{nullptr};
+  bool is_set() const { return basic_auth_hash != nullptr; }
+#endif
 };
 
 class AuthMiddlewareHandler : public MiddlewareHandler {
@@ -59,9 +68,21 @@ class AuthMiddlewareHandler : public MiddlewareHandler {
       : MiddlewareHandler(next), credentials_(credentials) {}
 
   bool check_auth(AsyncWebServerRequest *request) {
-    bool success = request->authenticate(credentials_->username.c_str(), credentials_->password.c_str());
+    // The scheme is chosen at build time (USE_WEBSERVER_AUTH_DIGEST); the unused path is
+    // compiled out. On ESP32 our own server picks the scheme internally.
+#if USE_ESP32 || defined(USE_WEBSERVER_AUTH_DIGEST)
+    bool success = request->authenticate(credentials_->username, credentials_->password);
+#else
+    bool success = request->authenticate(credentials_->basic_auth_hash);
+#endif
     if (!success) {
+#if USE_ESP32
       request->requestAuthentication();
+#elif defined(USE_WEBSERVER_AUTH_DIGEST)
+      request->requestAuthentication(nullptr, true);
+#else
+      request->requestAuthentication(nullptr, false);
+#endif
     }
     return success;
   }
@@ -116,8 +137,12 @@ class WebServerBase {
   AsyncWebServer *get_server() const { return this->server_; }
 
 #ifdef USE_WEBSERVER_AUTH
-  void set_auth_username(std::string auth_username) { credentials_.username = std::move(auth_username); }
-  void set_auth_password(std::string auth_password) { credentials_.password = std::move(auth_password); }
+#if USE_ESP32 || defined(USE_WEBSERVER_AUTH_DIGEST)
+  void set_auth_username(const char *auth_username) { credentials_.username = auth_username; }
+  void set_auth_password(const char *auth_password) { credentials_.password = auth_password; }
+#else
+  void set_auth_basic_hash(const char *hash) { credentials_.basic_auth_hash = hash; }
+#endif
 #endif
 
   void add_handler(AsyncWebHandler *handler);

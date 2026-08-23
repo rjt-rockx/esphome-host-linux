@@ -143,6 +143,22 @@ def _patch_host_ip_address(path: Path) -> None:
     path.write_text(src)
 
 
+def _patch_spi_final(path: Path) -> None:
+    """Upstream marks SPIComponent `final`, so linux_spi's component (which owns a
+    spidev-backed SPIBus instead of building one from GPIO pins) cannot derive from
+    it. Drop the specifier on host; nothing else in the class changes."""
+    _patch(
+        path,
+        marker="// PI_HOST_PATCHED_SPI",
+        replacements=[
+            (
+                "class SPIComponent final : public Component {",
+                "class SPIComponent : public Component {  // PI_HOST: `final` dropped for linux_spi",
+            ),
+        ],
+    )
+
+
 def _patch_seesaw_readbuf(path: Path) -> None:
     """Adafruit Seesaw firmware requires >=250us between the register-address
     write and the subsequent read on the same transaction. On Arduino the Wire
@@ -185,6 +201,7 @@ def _patch_all(_target, _source, _env):
     _ensure_esp_idf_version_stub(project_dir)
     _patch_host_ip_address(components_root / "network" / "ip_address.h")
     _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
+    _patch_spi_final(components_root / "spi" / "spi.h")
 
     # Expand the USE_ESP32 guard to also accept USE_HOST in the BLE consumer
     # components, so stock ESPHome BLE listeners compile against our host-side
@@ -287,6 +304,15 @@ def _patch_all(_target, _source, _env):
             (
                 "#ifdef USE_ESP32\n  this->base_->add_handler(&this->events_);\n#endif",
                 "#if defined(USE_ESP32) || defined(USE_HOST)\n  this->base_->add_handler(&this->events_);\n#endif",
+            ),
+            # get_request_header() (CORS origin checks and the PNA preflight) picks the
+            # Arduino getHeader() API off the USE_ESP32 branch; the host shim exposes the
+            # web_server_idf-style get_header() instead.
+            (
+                "static std::string get_request_header(AsyncWebServerRequest *request, const char *name) {\n"
+                "#ifdef USE_ESP32",
+                "static std::string get_request_header(AsyncWebServerRequest *request, const char *name) {\n"
+                "#if defined(USE_ESP32) || defined(USE_HOST)",
             ),
         ],
     )

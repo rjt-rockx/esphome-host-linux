@@ -12,6 +12,7 @@ from pathlib import Path
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.const import CONF_ID
+import esphome.final_validate as fv
 from esphome.core import CORE
 from esphome.coroutine import CoroPriority, coroutine_with_priority
 from esphome.helpers import copy_file_if_changed
@@ -58,6 +59,22 @@ CONFIG_SCHEMA = cv.All(
     ),
     _consume_web_server_base_sockets,
 )
+
+
+def _final_validate(config):
+    # The host AsyncWebServer shim implements Basic auth only; there is no MD5
+    # digest challenge/response path (upstream's lives in web_server_idf).
+    auth = fv.full_config.get().get("web_server", {}).get("auth") or {}
+    if auth.get("type") == "digest":
+        raise cv.Invalid(
+            "web_server 'auth: type: digest' is not supported on host; use "
+            "'type: basic' (the default).",
+            path=["web_server", "auth", "type"],
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 # --------------------------------------------------------------------------
