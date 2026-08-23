@@ -297,7 +297,10 @@ void ESP32BLETracker::stop_scan_() {
   // start_scan() reentrantly (it would see RUNNING and refuse otherwise), and
   // never touch the state afterwards so such a restart's STARTING survives.
   this->set_scanner_state_(ScannerState::IDLE);
-  if (was_running)
+  // A stop_scan() from inside an on_scan_end automation re-enters here (the
+  // continuous period timer fires the trigger while the scan still runs); the
+  // outer dispatch already represents this scan boundary, so don't fire again.
+  if (was_running && !this->in_scan_end_)
     this->fire_scan_end_();
 }
 
@@ -305,7 +308,9 @@ void ESP32BLETracker::fire_scan_end_() {
   // Deliver held advertisements whose scan response never arrived (unmerged)
   // BEFORE on_scan_end fires.
   this->merger_.flush();
+  this->in_scan_end_ = true;
   this->dispatcher_.on_scan_end();
+  this->in_scan_end_ = false;
 }
 
 void ESP32BLETracker::set_scanner_state_(ScannerState state) {

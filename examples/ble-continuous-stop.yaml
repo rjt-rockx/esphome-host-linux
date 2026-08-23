@@ -1,0 +1,34 @@
+# Reentrancy probe: a continuous scan whose on_scan_end automation stops the
+# scanner. The trigger fires from the period timer while the backend is still
+# running, so the stop re-enters the stop path — the automation must run
+# exactly once per scan boundary, not twice.
+esphome:
+  name: ble-continuous-stop
+
+host:
+
+logger:
+  level: VERBOSE
+  logs:
+    esp32_ble_tracker: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32_ble_tracker:
+  id: tracker
+  scan_parameters:
+    continuous: true
+    duration: 2s
+  on_scan_end:
+    then:
+      - lambda: |-
+          ESP_LOGI("probe", "scan end fired");
+          id(tracker).stop_scan();
+
+binary_sensor:
+  - platform: ble_presence
+    name: "stop probe presence"
+    mac_address: A4:C1:38:00:00:10

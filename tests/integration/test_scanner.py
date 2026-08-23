@@ -97,3 +97,21 @@ def test_on_scan_end_can_restart_one_shot(bluez, run_host):
         time.sleep(0.2)
     assert len(bluez.calls("StartDiscovery")) >= 3, "on_scan_end start_scan() did not chain scan periods"
     assert len(bluez.calls("StopDiscovery")) >= 2, "chained periods did not stop the backend in between"
+
+
+def test_stop_from_on_scan_end_fires_once_per_boundary(bluez, run_host):
+    # ble-continuous-stop: a continuous scan whose on_scan_end automation logs
+    # and calls stop_scan(). The trigger fires from the period timer while the
+    # backend still runs, so the stop re-enters the stop path — the automation
+    # must fire exactly once for that boundary (pre-fix it fired twice), and
+    # the stopped scanner must stay stopped.
+    import time
+
+    host = run_host("ble-continuous-stop")
+    assert bluez.wait_for_call("StartDiscovery", timeout=20), "scan never started"
+    assert host.wait_for_log("scan end fired", timeout=15), "on_scan_end never fired"
+    assert bluez.wait_for_call("StopDiscovery", timeout=10), "stop_scan() did not stop the backend"
+    time.sleep(2.5)  # past another would-be period boundary
+    fired = sum("scan end fired" in line for line in host.snapshot())
+    assert fired == 1, f"on_scan_end fired {fired} times for one scan boundary"
+    assert len(bluez.calls("StartDiscovery")) == 1, "stopped scanner restarted itself"

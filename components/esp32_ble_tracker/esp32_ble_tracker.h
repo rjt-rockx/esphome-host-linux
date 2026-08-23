@@ -313,6 +313,10 @@ class ESP32BLETracker : public Component {
   // main loop reaps the thread and reports FAILED (or IDLE on request).
   std::atomic<bool> thread_exited_{false};
   ScannerState scanner_state_{ScannerState::IDLE};
+  // True while dispatcher_.on_scan_end() runs: a stop_scan() called from
+  // inside an on_scan_end automation must not fire the trigger a second time
+  // for the same scan boundary. Main-loop only.
+  bool in_scan_end_{false};
   // Address types seen in InterfacesAdded, keyed by MAC packed into a u64:
   // PropertiesChanged updates rarely carry AddressType, so without this cache
   // every update would flip a random-address device back to public. Only
