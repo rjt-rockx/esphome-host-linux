@@ -1,0 +1,14 @@
+# EXPECT_ERROR: digest
+esphome:
+  name: digest-auth-rejected
+host:
+external_components:
+  - source:
+      type: local
+      path: ../../../../components
+web_server:
+  version: 3
+  auth:
+    username: admin
+    password: secret
+    type: digest

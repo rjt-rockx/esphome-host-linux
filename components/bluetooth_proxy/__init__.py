@@ -1,7 +1,8 @@
 """bluetooth_proxy for the host platform (native BlueZ).
 
-Host as a Home Assistant Bluetooth proxy: forwards parsed advertisements
-(re-serialized) and proxies active GATT connections over the ESPHome native API.
+Host as a Home Assistant Bluetooth proxy: streams raw advertisements from the
+BLE hub's callback and proxies active GATT connections over the ESPHome native
+API.
 """
 
 from __future__ import annotations
@@ -20,9 +21,7 @@ CONF_CONNECTION_SLOTS = "connection_slots"
 MAX_CONNECTIONS = 8
 
 bluetooth_proxy_ns = cg.esphome_ns.namespace("bluetooth_proxy")
-BluetoothProxy = bluetooth_proxy_ns.class_(
-    "BluetoothProxy", esp32_ble_tracker.ESPBTDeviceListener, cg.Component
-)
+BluetoothProxy = bluetooth_proxy_ns.class_("BluetoothProxy", cg.Component)
 BluetoothConnection = bluetooth_proxy_ns.class_("BluetoothConnection", esp32_ble_client.BLEClientBase)
 
 CONNECTION_SCHEMA = esp32_ble_tracker.ESP_BLE_DEVICE_SCHEMA.extend(
