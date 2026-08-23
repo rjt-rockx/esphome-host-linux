@@ -1,13 +1,12 @@
 #include "esp32_ble_tracker.h"
 
+#include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
 #include <cerrno>
-#include <chrono>
 #include <cstdio>
 #include <cstring>
 
-#include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -29,12 +28,7 @@ namespace {
 constexpr int BTPROTO_HCI_LOCAL = 1;
 constexpr int HCI_CHANNEL_RAW_LOCAL = 0;
 
-constexpr uint16_t HCI_DEV_NONE_LOCAL = 0xffff;
-
-constexpr int HCIDEVUP_LOCAL = 0x400448c9;
-constexpr int HCIDEVDOWN_LOCAL = 0x400448ca;
-constexpr int HCIGETDEVLIST_LOCAL = 0x800448d2;
-constexpr int HCIGETDEVINFO_LOCAL = 0x800448d3;
+constexpr unsigned long HCIGETDEVINFO_LOCAL = 0x800448d3;
 
 constexpr uint8_t HCI_COMMAND_PKT = 0x01;
 constexpr uint8_t HCI_EVENT_PKT = 0x04;
@@ -44,26 +38,26 @@ constexpr uint8_t EVT_CMD_COMPLETE = 0x0e;
 constexpr uint8_t EVT_CMD_STATUS = 0x0f;
 
 constexpr uint8_t SUBEVT_LE_ADVERTISING_REPORT = 0x02;
-constexpr uint8_t SUBEVT_LE_EXTENDED_ADV_REPORT = 0x0d;
+
+// LE Advertising Report event types.
+constexpr uint8_t ADV_IND = 0x00;
+constexpr uint8_t ADV_SCAN_IND = 0x02;
+constexpr uint8_t SCAN_RSP = 0x04;
 
 constexpr uint16_t OCF_LE_SET_SCAN_PARAMETERS = 0x000b;
 constexpr uint16_t OCF_LE_SET_SCAN_ENABLE = 0x000c;
 constexpr uint16_t OGF_LE_CTL = 0x08;
 
-constexpr uint8_t AD_FLAGS = 0x01;
-constexpr uint8_t AD_INCOMPLETE_LIST_UUID16 = 0x02;
+// AD types emitted by the D-Bus re-encoder.
 constexpr uint8_t AD_COMPLETE_LIST_UUID16 = 0x03;
-constexpr uint8_t AD_INCOMPLETE_LIST_UUID32 = 0x04;
 constexpr uint8_t AD_COMPLETE_LIST_UUID32 = 0x05;
-constexpr uint8_t AD_INCOMPLETE_LIST_UUID128 = 0x06;
 constexpr uint8_t AD_COMPLETE_LIST_UUID128 = 0x07;
-constexpr uint8_t AD_SHORTENED_LOCAL_NAME = 0x08;
 constexpr uint8_t AD_COMPLETE_LOCAL_NAME = 0x09;
 constexpr uint8_t AD_TX_POWER_LEVEL = 0x0a;
+constexpr uint8_t AD_APPEARANCE = 0x19;
 constexpr uint8_t AD_SERVICE_DATA_UUID16 = 0x16;
 constexpr uint8_t AD_SERVICE_DATA_UUID32 = 0x20;
 constexpr uint8_t AD_SERVICE_DATA_UUID128 = 0x21;
-constexpr uint8_t AD_APPEARANCE = 0x19;
 constexpr uint8_t AD_MANUFACTURER_DATA = 0xff;
 
 struct __attribute__((packed)) sockaddr_hci_local {
@@ -85,6 +79,12 @@ struct hci_filter_local {
 constexpr int SOL_HCI_LOCAL = 0;
 constexpr int HCI_FILTER_LOCAL = 2;
 
+// Offset of bdaddr[6] inside `struct hci_dev_info` (uint16_t dev_id + char
+// name[8]); the ioctl fills the whole struct, so the request buffer must be
+// generously sized.
+constexpr size_t HCI_DEV_INFO_BDADDR_OFFSET = 10;
+constexpr size_t HCI_DEV_INFO_SIZE = 256;
+
 inline void hci_filter_set_ptype(int t, hci_filter_local *f) { f->type_mask |= (1u << (t & 0x1f)); }
 inline void hci_filter_set_event(int e, hci_filter_local *f) {
   if (e < 32) {
@@ -98,128 +98,81 @@ inline uint16_t hci_opcode(uint16_t ogf, uint16_t ocf) {
   return static_cast<uint16_t>((ogf << 10) | (ocf & 0x03ff));
 }
 
-void parse_ad_payload(const uint8_t *payload, uint8_t len, ESPBTDevice &device) {
-  size_t pos = 0;
-  while (pos + 1 < len) {
-    uint8_t field_len = payload[pos];
-    if (field_len == 0 || pos + 1 + field_len > len)
-      break;
-    uint8_t type = payload[pos + 1];
-    const uint8_t *data = payload + pos + 2;
-    uint8_t data_len = field_len - 1;
+// Parse "AA:BB:CC:DD:EE:FF" into controller order (LSB first).
+bool parse_bdaddr(const char *str, uint8_t out[6]) {
+  unsigned vals[6];
+  if (std::sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x", &vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5]) != 6)
+    return false;
+  for (int i = 0; i < 6; i++)
+    out[i] = static_cast<uint8_t>(vals[5 - i]);
+  return true;
+}
 
-    switch (type) {
-      case AD_FLAGS:
-        if (data_len > 0)
-          device.set_ad_flag(data[0]);
-        break;
-      case AD_INCOMPLETE_LIST_UUID16:
-      case AD_COMPLETE_LIST_UUID16:
-        for (size_t i = 0; i + 1 < data_len; i += 2) {
-          uint16_t u = static_cast<uint16_t>(data[i]) | (static_cast<uint16_t>(data[i + 1]) << 8);
-          device.add_service_uuid(ESPBTUUID::from_uint16(u));
-        }
-        break;
-      case AD_INCOMPLETE_LIST_UUID32:
-      case AD_COMPLETE_LIST_UUID32:
-        for (size_t i = 0; i + 3 < data_len; i += 4) {
-          uint32_t u = static_cast<uint32_t>(data[i]) | (static_cast<uint32_t>(data[i + 1]) << 8) |
-                       (static_cast<uint32_t>(data[i + 2]) << 16) | (static_cast<uint32_t>(data[i + 3]) << 24);
-          device.add_service_uuid(ESPBTUUID::from_uint32(u));
-        }
-        break;
-      case AD_INCOMPLETE_LIST_UUID128:
-      case AD_COMPLETE_LIST_UUID128:
-        for (size_t i = 0; i + 15 < data_len; i += 16) {
-          device.add_service_uuid(ESPBTUUID::from_raw(data + i));
-        }
-        break;
-      case AD_SHORTENED_LOCAL_NAME:
-      case AD_COMPLETE_LOCAL_NAME:
-        device.set_name(std::string(reinterpret_cast<const char *>(data), data_len));
-        break;
-      case AD_TX_POWER_LEVEL:
-        if (data_len > 0)
-          device.add_tx_power(static_cast<int8_t>(data[0]));
-        break;
-      case AD_APPEARANCE:
-        if (data_len >= 2)
-          device.set_appearance(static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8));
-        break;
-      case AD_SERVICE_DATA_UUID16: {
-        if (data_len >= 2) {
-          ServiceData sd;
-          uint16_t u = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
-          sd.uuid = ESPBTUUID::from_uint16(u);
-          sd.data.assign(data + 2, data + data_len);
-          device.add_service_data(std::move(sd));
-        }
-        break;
-      }
-      case AD_SERVICE_DATA_UUID32: {
-        if (data_len >= 4) {
-          ServiceData sd;
-          uint32_t u = static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8) |
-                       (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
-          sd.uuid = ESPBTUUID::from_uint32(u);
-          sd.data.assign(data + 4, data + data_len);
-          device.add_service_data(std::move(sd));
-        }
-        break;
-      }
-      case AD_SERVICE_DATA_UUID128: {
-        if (data_len >= 16) {
-          ServiceData sd;
-          sd.uuid = ESPBTUUID::from_raw(data);
-          sd.data.assign(data + 16, data + data_len);
-          device.add_service_data(std::move(sd));
-        }
-        break;
-      }
-      case AD_MANUFACTURER_DATA: {
-        if (data_len >= 2) {
-          ServiceData sd;
-          uint16_t u = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
-          sd.uuid = ESPBTUUID::from_uint16(u);
-          sd.data.assign(data, data + data_len);
-          device.add_manufacturer_data(std::move(sd));
-        }
-        break;
-      }
-      default:
-        break;
+// Parse "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" into 16 bytes, LSB first (BLE
+// wire order).
+bool parse_uuid_str(const char *s, uint8_t out[16]) {
+  if (s == nullptr || std::strlen(s) != 36)
+    return false;
+  int pos = 0;
+  uint8_t be[16];
+  for (int i = 0; i < 36;) {
+    if (s[i] == '-') {
+      i++;
+      continue;
     }
-    pos += 1 + field_len;
+    unsigned v;
+    if (std::sscanf(s + i, "%02x", &v) != 1 || pos >= 16)
+      return false;
+    be[pos++] = static_cast<uint8_t>(v);
+    i += 2;
+  }
+  if (pos != 16)
+    return false;
+  for (int i = 0; i < 16; i++)
+    out[i] = be[15 - i];
+  return true;
+}
+
+// The Bluetooth Base UUID in LSB-first order; bytes 12..15 carry the short form.
+constexpr uint8_t BT_BASE_UUID_LSB[12] = {0xFB, 0x34, 0x9B, 0x5F, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00};
+
+// Shorten a 128-bit UUID to its 16- or 32-bit form when it sits on the
+// Bluetooth Base UUID. Returns the short width in bytes (2 or 4), or 16.
+uint8_t shorten_uuid(const uint8_t uuid_lsb[16], uint32_t &short_value) {
+  if (std::memcmp(uuid_lsb, BT_BASE_UUID_LSB, sizeof(BT_BASE_UUID_LSB)) != 0)
+    return 16;
+  short_value = static_cast<uint32_t>(uuid_lsb[12]) | (static_cast<uint32_t>(uuid_lsb[13]) << 8) |
+                (static_cast<uint32_t>(uuid_lsb[14]) << 16) | (static_cast<uint32_t>(uuid_lsb[15]) << 24);
+  return short_value <= 0xffff ? 2 : 4;
+}
+
+// Append one AD element (length, type, payload) to a frame, silently dropping
+// it when the frame is full — an over-long advertisement is truncated, never
+// malformed.
+void ad_append(uint8_t *data, uint8_t &len, size_t capacity, uint8_t type, const uint8_t *payload, size_t payload_len) {
+  if (payload_len > 0xfe || len + 2 + payload_len > capacity)
+    return;
+  data[len++] = static_cast<uint8_t>(1 + payload_len);
+  data[len++] = type;
+  if (payload_len > 0) {
+    std::memcpy(data + len, payload, payload_len);
+    len += static_cast<uint8_t>(payload_len);
   }
 }
 
+// Read a D-Bus "ay" (array of bytes) at the current message position into vec.
+int read_byte_array(sd_bus_message *m, std::vector<uint8_t> &vec) {
+  const void *data = nullptr;
+  size_t len = 0;
+  int r = sd_bus_message_read_array(m, 'y', &data, &len);
+  if (r < 0)
+    return r;
+  const uint8_t *p = static_cast<const uint8_t *>(data);
+  vec.assign(p, p + len);
+  return 0;
+}
+
 }  // namespace
-
-optional<ESPBLEiBeacon> ESPBLEiBeacon::from_manufacturer_data(const ServiceData &data) {
-  // Manufacturer data layout: data[0..1] = company ID (LE), data[2..] = payload.
-  if (data.data.size() < 2 + sizeof(ESPBLEiBeacon::beacon_data_))
-    return {};
-  // Apple = 0x004c, iBeacon sub-type = 0x02 length 0x15.
-  if (data.data[0] != 0x4c || data.data[1] != 0x00)
-    return {};
-  if (data.data[2] != 0x02 || data.data[3] != 0x15)
-    return {};
-  return ESPBLEiBeacon(data.data.data() + 2);
-}
-
-std::string ESPBTDevice::address_str() const {
-  char buf[18];
-  std::snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", this->address_[5], this->address_[4],
-                this->address_[3], this->address_[2], this->address_[1], this->address_[0]);
-  return std::string(buf);
-}
-
-uint64_t ESPBTDevice::address_uint64() const {
-  uint64_t v = 0;
-  for (int i = 5; i >= 0; i--)
-    v = (v << 8) | this->address_[i];
-  return v;
-}
 
 const char *esp_err_to_name(esp_err_t err) {
   switch (err) {
@@ -275,6 +228,9 @@ const char *client_state_to_string(ClientState state) {
 float ESP32BLETracker::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
 
 void ESP32BLETracker::setup() {
+  this->merger_.bind(&this->dispatcher_, &this->scan_continuous_, TAG);
+  this->read_adapter_mac_();
+  this->scan_period_start_ = millis();
   this->stop_thread_ = false;
   if (this->use_hci_backend_) {
     this->scanner_thread_ = std::thread([this] { this->scanner_thread_main_(); });
@@ -288,31 +244,56 @@ void ESP32BLETracker::setup() {
 }
 
 void ESP32BLETracker::dump_config() {
+  char mac[MAC_ADDRESS_PRETTY_BUFFER_SIZE];
+  std::snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X", this->adapter_mac_[0], this->adapter_mac_[1],
+                this->adapter_mac_[2], this->adapter_mac_[3], this->adapter_mac_[4], this->adapter_mac_[5]);
   if (this->use_hci_backend_) {
     ESP_LOGCONFIG(TAG, "BLE Tracker (Linux raw HCI):");
     ESP_LOGCONFIG(TAG, "  HCI device: %s", this->hci_device_name_.c_str());
     ESP_LOGCONFIG(TAG, "  Scan interval: %u ms", this->scan_interval_ms_);
     ESP_LOGCONFIG(TAG, "  Scan window: %u ms", this->scan_window_ms_);
-    ESP_LOGCONFIG(TAG, "  Active scan: %s", this->scan_active_ ? "yes" : "no");
   } else {
     ESP_LOGCONFIG(TAG, "BLE Tracker (Linux BlueZ D-Bus):");
     ESP_LOGCONFIG(TAG, "  Adapter: %s", this->hci_device_name_.c_str());
-    ESP_LOGCONFIG(TAG, "  Active scan: %s", this->scan_active_ ? "yes" : "no");
   }
-  ESP_LOGCONFIG(TAG, "  Listeners: %zu", this->listeners_.size());
+  ESP_LOGCONFIG(TAG, "  Adapter MAC: %s", mac);
+  ESP_LOGCONFIG(TAG, "  Active scan: %s", YESNO(this->scan_active_));
+  ESP_LOGCONFIG(TAG, "  Continuous: %s", YESNO(this->scan_continuous_));
 }
 
 void ESP32BLETracker::loop() {
-  std::deque<ESPBTDevice> drained;
+  const uint32_t now = App.get_loop_component_start_time();
+
+  std::deque<AdvFrame> drained;
   {
     std::lock_guard<std::mutex> g(this->queue_mu_);
     drained.swap(this->queue_);
   }
-  for (auto &device : drained) {
-    for (auto *listener : this->listeners_) {
-      listener->parse_device(device);
+  // Log unclaimed devices only on one-shot scans; a continuous scan would spam.
+  const char *log_tag = this->scan_continuous_ ? nullptr : TAG;
+  for (const auto &f : drained) {
+    if (f.evt_type == EVT_TYPE_MERGED) {
+      this->dispatcher_.dispatch(f.mac, f.rssi, f.addr_type, f.data, f.len, false, log_tag);
+    } else if (f.evt_type == SCAN_RSP) {
+      this->merger_.submit_scan_rsp(f.mac, f.rssi, f.addr_type, f.data, f.len);
+    } else if (this->scan_active_ && (f.evt_type == ADV_IND || f.evt_type == ADV_SCAN_IND)) {
+      this->merger_.stash_adv(f.mac, f.rssi, f.addr_type, f.data, f.len, now);
+    } else {
+      this->dispatcher_.dispatch(f.mac, f.rssi, f.addr_type, f.data, f.len, false, log_tag);
     }
   }
+  // Deliver held advertisements whose scan response never arrived.
+  if (!this->merger_.empty())
+    this->merger_.sweep(now);
+
+  // Period timer: fire on_scan_end() once per scan duration, mirroring
+  // esp32_ble_tracker's cleanup_scan_state_().
+  if (now - this->scan_period_start_ >= this->scan_duration_s_ * 1000) {
+    this->scan_period_start_ = now;
+    this->merger_.flush();
+    this->dispatcher_.on_scan_end();
+  }
+
   // Promote any client a listener just moved to DISCOVERED. Cheap fast-path:
   // only scan clients when a state change was signalled.
   if (!this->clients_.empty() && this->state_version_ != this->last_state_version_) {
@@ -330,13 +311,59 @@ void ESP32BLETracker::try_promote_discovered_clients_() {
   }
 }
 
-void ESP32BLETracker::deliver_device_(ESPBTDevice device) {
-  ESP_LOGV(TAG, "Advertisement: %s RSSI=%d name='%s' service_uuids=%zu", device.address_str().c_str(),
-           device.get_rssi(), device.get_name().c_str(), device.get_service_uuids().size());
-  std::lock_guard<std::mutex> g(this->queue_mu_);
-  if (this->queue_.size() >= QUEUE_MAX)
-    this->queue_.pop_front();
-  this->queue_.push_back(std::move(device));
+void ESP32BLETracker::enqueue_frame_(const AdvFrame &frame) {
+  {
+    std::lock_guard<std::mutex> g(this->queue_mu_);
+    if (this->queue_.size() >= QUEUE_MAX)
+      this->queue_.pop_front();
+    this->queue_.push_back(frame);
+  }
+  // The main loop can sleep in select() for a full loop interval; wake it so
+  // the advertisement is dispatched now rather than at the next tick.
+  App.wake_loop_threadsafe();
+}
+
+void ESP32BLETracker::read_adapter_mac_() {
+  if (this->use_hci_backend_) {
+    int dev_id = -1;
+    if (this->hci_device_name_.size() > 3 && this->hci_device_name_.rfind("hci", 0) == 0)
+      dev_id = std::atoi(this->hci_device_name_.c_str() + 3);
+    if (dev_id < 0)
+      return;
+    int fd = socket(AF_BLUETOOTH_LOCAL, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI_LOCAL);
+    if (fd < 0)
+      return;
+    uint8_t info[HCI_DEV_INFO_SIZE]{};
+    // struct hci_dev_info begins with the dev_id the ioctl looks up.
+    uint16_t id = static_cast<uint16_t>(dev_id);
+    std::memcpy(info, &id, sizeof(id));
+    if (ioctl(fd, HCIGETDEVINFO_LOCAL, info) == 0) {
+      // Stored LSB first by the kernel; the contract wants printable order.
+      for (int i = 0; i < 6; i++)
+        this->adapter_mac_[i] = info[HCI_DEV_INFO_BDADDR_OFFSET + 5 - i];
+    }
+    ::close(fd);
+    return;
+  }
+
+  sd_bus *bus = nullptr;
+  if (sd_bus_open_system(&bus) < 0)
+    return;
+  std::string adapter_path = "/org/bluez/" + this->hci_device_name_;
+  sd_bus_error err = SD_BUS_ERROR_NULL;
+  char *address = nullptr;
+  if (sd_bus_get_property_string(bus, "org.bluez", adapter_path.c_str(), "org.bluez.Adapter1", "Address", &err,
+                                 &address) >= 0 &&
+      address != nullptr) {
+    uint8_t lsb[6];
+    if (parse_bdaddr(address, lsb)) {
+      for (int i = 0; i < 6; i++)
+        this->adapter_mac_[i] = lsb[5 - i];
+    }
+  }
+  free(address);
+  sd_bus_error_free(&err);
+  sd_bus_unref(bus);
 }
 
 bool ESP32BLETracker::open_hci_() {
@@ -450,22 +477,17 @@ void ESP32BLETracker::handle_le_meta_event_(const uint8_t *evt, size_t len) {
   for (uint8_t i = 0; i < num_reports; i++) {
     if (pos + 9 > len)
       return;
-    uint8_t /*evt_type*/ _t = evt[pos];
-    (void) _t;
-    uint8_t /*addr_type*/ _at = evt[pos + 1];
-    (void) _at;
-    const uint8_t *addr = evt + pos + 2;  // 6 bytes, little-endian (LSB first)
+    AdvFrame frame{};
+    frame.evt_type = evt[pos];
+    frame.addr_type = evt[pos + 1];
+    std::memcpy(frame.mac, evt + pos + 2, MAC_ADDRESS_SIZE);  // little-endian (LSB first)
     uint8_t data_len = evt[pos + 8];
     if (pos + 9 + data_len + 1 > len)
       return;
-    const uint8_t *data = evt + pos + 9;
-    int8_t rssi = static_cast<int8_t>(evt[pos + 9 + data_len]);
-
-    ESPBTDevice device;
-    device.set_address(addr);
-    device.set_rssi(rssi);
-    parse_ad_payload(data, data_len, device);
-    this->deliver_device_(std::move(device));
+    frame.len = data_len > sizeof(frame.data) ? static_cast<uint8_t>(sizeof(frame.data)) : data_len;
+    std::memcpy(frame.data, evt + pos + 9, frame.len);
+    frame.rssi = static_cast<int8_t>(evt[pos + 9 + data_len]);
+    this->enqueue_frame_(frame);
 
     pos += 9 + data_len + 1;
   }
@@ -489,7 +511,7 @@ void ESP32BLETracker::scanner_thread_main_() {
     this->close_hci_();
     return;
   }
-  this->hci_ok_ = true;
+  this->scan_running_ = true;
   ESP_LOGI(TAG, "BLE scan started on %s", this->hci_device_name_.c_str());
 
   uint8_t buf[1024];
@@ -513,6 +535,7 @@ void ESP32BLETracker::scanner_thread_main_() {
       this->handle_le_meta_event_(buf + 3, plen);
     }
   }
+  this->scan_running_ = false;
   this->send_le_set_scan_enable_(false);
   this->close_hci_();
 }
@@ -523,44 +546,18 @@ void ESP32BLETracker::scanner_thread_main_() {
 // Talks to bluetoothd over the system bus, so it coexists with anything else
 // using the adapter. It asks bluetoothd to discover, then reads the *parsed*
 // org.bluez.Device1 properties (Address/RSSI/Name/UUIDs/ServiceData/
-// ManufacturerData) and feeds them into the same deliver_device_() path the
-// listeners consume.
+// ManufacturerData) and re-encodes them into the AD structures the neutral
+// ESPBTDevice parser consumes. BlueZ has already merged advertisement and scan
+// response at that point, so these frames bypass the scan-response merger.
 //
 // BlueZ does NOT expose the raw advertising PDU here (only decoded fields); for
 // byte-exact raw advertisements use the hci_backend opt-in.
 // ---------------------------------------------------------------------------
 
-namespace {
-
-// Parse "AA:BB:CC:DD:EE:FF" into address_[] (LSB-first, matching set_address).
-bool parse_bdaddr(const char *str, uint8_t out[6]) {
-  unsigned vals[6];
-  if (std::sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x", &vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5]) != 6)
-    return false;
-  // String is big-endian (MSB first); ESPBTDevice stores LSB-first.
-  for (int i = 0; i < 6; i++)
-    out[i] = static_cast<uint8_t>(vals[5 - i]);
-  return true;
-}
-
-// Read a D-Bus "ay" (array of bytes) at the current message position into vec.
-int read_byte_array(sd_bus_message *m, std::vector<uint8_t> &vec) {
-  const void *data = nullptr;
-  size_t len = 0;
-  int r = sd_bus_message_read_array(m, 'y', &data, &len);
-  if (r < 0)
-    return r;
-  const uint8_t *p = static_cast<const uint8_t *>(data);
-  vec.assign(p, p + len);
-  return 0;
-}
-
-}  // namespace
-
 // Parse a single org.bluez.Device1 property dictionary (a{sv}) that the message
-// is currently positioned to enter, populating `device`. Returns true if at
-// least an Address was found. The message must be positioned at the 'a{sv}'.
-bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &device) {
+// is currently positioned to enter, re-encoding it into `frame`. Returns true if
+// at least an Address was found. The message must be positioned at the 'a{sv}'.
+bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, AdvFrame &frame) {
   bool have_address = false;
   int r = sd_bus_message_enter_container(m, 'a', "{sv}");
   if (r < 0)
@@ -576,35 +573,61 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &devic
     if (std::strcmp(key, "Address") == 0) {
       const char *addr = nullptr;
       sd_bus_message_read(m, "v", "s", &addr);
-      uint8_t bd[6];
-      if (addr != nullptr && parse_bdaddr(addr, bd)) {
-        device.set_address(bd);
+      if (addr != nullptr && parse_bdaddr(addr, frame.mac))
         have_address = true;
-      }
+    } else if (std::strcmp(key, "AddressType") == 0) {
+      const char *type = nullptr;
+      sd_bus_message_read(m, "v", "s", &type);
+      if (type != nullptr && std::strcmp(type, "random") == 0)
+        frame.addr_type = ble_device_base::BLE_ADDR_TYPE_RANDOM;
     } else if (std::strcmp(key, "Name") == 0) {
       const char *name = nullptr;
       sd_bus_message_read(m, "v", "s", &name);
-      if (name != nullptr)
-        device.set_name(name);
+      if (name != nullptr) {
+        ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LOCAL_NAME,
+                  reinterpret_cast<const uint8_t *>(name), std::strlen(name));
+      }
     } else if (std::strcmp(key, "RSSI") == 0) {
       int16_t rssi = 0;
       sd_bus_message_read(m, "v", "n", &rssi);
-      device.set_rssi(static_cast<int8_t>(rssi));
+      frame.rssi = static_cast<int8_t>(rssi);
     } else if (std::strcmp(key, "TxPower") == 0) {
       int16_t tx = 0;
       sd_bus_message_read(m, "v", "n", &tx);
-      device.add_tx_power(static_cast<int8_t>(tx));
+      uint8_t v = static_cast<uint8_t>(static_cast<int8_t>(tx));
+      ad_append(frame.data, frame.len, sizeof(frame.data), AD_TX_POWER_LEVEL, &v, 1);
     } else if (std::strcmp(key, "Appearance") == 0) {
       uint16_t app = 0;
       sd_bus_message_read(m, "v", "q", &app);
-      device.set_appearance(app);
+      uint8_t v[2] = {static_cast<uint8_t>(app & 0xff), static_cast<uint8_t>(app >> 8)};
+      ad_append(frame.data, frame.len, sizeof(frame.data), AD_APPEARANCE, v, sizeof(v));
     } else if (std::strcmp(key, "UUIDs") == 0) {
       sd_bus_message_enter_container(m, 'v', "as");
       sd_bus_message_enter_container(m, 'a', "s");
       const char *uuid = nullptr;
       while (sd_bus_message_read(m, "s", &uuid) > 0) {
-        if (uuid != nullptr)
-          device.add_service_uuid(ESPBTUUID::from_uuid_str(uuid));
+        uint8_t raw[16];
+        if (uuid == nullptr || !parse_uuid_str(uuid, raw))
+          continue;
+        uint32_t short_value = 0;
+        // One AD element per UUID rather than one concatenated list: the parser
+        // treats each element independently, and mixed widths cannot share one.
+        switch (shorten_uuid(raw, short_value)) {
+          case 2: {
+            uint8_t v[2] = {static_cast<uint8_t>(short_value & 0xff), static_cast<uint8_t>(short_value >> 8)};
+            ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LIST_UUID16, v, sizeof(v));
+            break;
+          }
+          case 4: {
+            uint8_t v[4] = {static_cast<uint8_t>(short_value & 0xff), static_cast<uint8_t>(short_value >> 8),
+                            static_cast<uint8_t>(short_value >> 16), static_cast<uint8_t>(short_value >> 24)};
+            ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LIST_UUID32, v, sizeof(v));
+            break;
+          }
+          default:
+            ad_append(frame.data, frame.len, sizeof(frame.data), AD_COMPLETE_LIST_UUID128, raw, 16);
+            break;
+        }
       }
       sd_bus_message_exit_container(m);
       sd_bus_message_exit_container(m);
@@ -619,16 +642,13 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &devic
         uint16_t company = 0;
         sd_bus_message_read(m, "q", &company);
         sd_bus_message_enter_container(m, 'v', "ay");
-        ServiceData sd;
-        sd.uuid = ESPBTUUID::from_uint16(company);
-        // Manufacturer data is stored company-LE-prefixed so iBeacon parsing
-        // (from_manufacturer_data) can read company id from data[0..1].
-        sd.data.push_back(static_cast<uint8_t>(company & 0xff));
-        sd.data.push_back(static_cast<uint8_t>(company >> 8));
         std::vector<uint8_t> payload;
-        read_byte_array(m, payload);
-        sd.data.insert(sd.data.end(), payload.begin(), payload.end());
-        device.add_manufacturer_data(std::move(sd));
+        payload.push_back(static_cast<uint8_t>(company & 0xff));
+        payload.push_back(static_cast<uint8_t>(company >> 8));
+        std::vector<uint8_t> body;
+        read_byte_array(m, body);
+        payload.insert(payload.end(), body.begin(), body.end());
+        ad_append(frame.data, frame.len, sizeof(frame.data), AD_MANUFACTURER_DATA, payload.data(), payload.size());
         sd_bus_message_exit_container(m);  // v
         sd_bus_message_exit_container(m);  // e
       }
@@ -645,11 +665,27 @@ bool ESP32BLETracker::parse_device1_props_(sd_bus_message *m, ESPBTDevice &devic
         const char *uuid = nullptr;
         sd_bus_message_read(m, "s", &uuid);
         sd_bus_message_enter_container(m, 'v', "ay");
-        ServiceData sd;
-        if (uuid != nullptr)
-          sd.uuid = ESPBTUUID::from_uuid_str(uuid);
-        read_byte_array(m, sd.data);
-        device.add_service_data(std::move(sd));
+        std::vector<uint8_t> body;
+        read_byte_array(m, body);
+        uint8_t raw[16];
+        if (uuid != nullptr && parse_uuid_str(uuid, raw)) {
+          std::vector<uint8_t> payload;
+          uint32_t short_value = 0;
+          uint8_t width = shorten_uuid(raw, short_value);
+          uint8_t ad_type = AD_SERVICE_DATA_UUID128;
+          if (width == 2) {
+            ad_type = AD_SERVICE_DATA_UUID16;
+            payload = {static_cast<uint8_t>(short_value & 0xff), static_cast<uint8_t>(short_value >> 8)};
+          } else if (width == 4) {
+            ad_type = AD_SERVICE_DATA_UUID32;
+            payload = {static_cast<uint8_t>(short_value & 0xff), static_cast<uint8_t>(short_value >> 8),
+                       static_cast<uint8_t>(short_value >> 16), static_cast<uint8_t>(short_value >> 24)};
+          } else {
+            payload.assign(raw, raw + 16);
+          }
+          payload.insert(payload.end(), body.begin(), body.end());
+          ad_append(frame.data, frame.len, sizeof(frame.data), ad_type, payload.data(), payload.size());
+        }
         sd_bus_message_exit_container(m);  // v
         sd_bus_message_exit_container(m);  // e
       }
@@ -727,7 +763,7 @@ void ESP32BLETracker::dbus_scanner_thread_main_() {
     sd_bus_error_free(&err);
   }
 
-  this->hci_ok_ = true;
+  this->scan_running_ = true;
   ESP_LOGI(TAG, "BLE scan started via BlueZ D-Bus on %s", this->hci_device_name_.c_str());
 
   while (!this->stop_thread_.load()) {
@@ -740,6 +776,7 @@ void ESP32BLETracker::dbus_scanner_thread_main_() {
       continue;  // more work queued, process it before waiting
     sd_bus_wait(bus, 200000);  // 200 ms, so stop_thread_ is checked promptly
   }
+  this->scan_running_ = false;
 
   {
     sd_bus_error err = SD_BUS_ERROR_NULL;
@@ -768,9 +805,10 @@ int ESP32BLETracker::on_interfaces_added_(sd_bus_message *m, void *userdata, sd_
     const char *iface = nullptr;
     sd_bus_message_read(m, "s", &iface);
     if (iface != nullptr && std::strcmp(iface, "org.bluez.Device1") == 0) {
-      ESPBTDevice device;
-      if (self->parse_device1_props_(m, device))
-        self->deliver_device_(std::move(device));
+      AdvFrame frame{};
+      frame.evt_type = EVT_TYPE_MERGED;
+      if (self->parse_device1_props_(m, frame))
+        self->enqueue_frame_(frame);
     } else {
       sd_bus_message_skip(m, "a{sv}");
     }
@@ -793,28 +831,25 @@ int ESP32BLETracker::on_properties_changed_(sd_bus_message *m, void *userdata, s
 
   // The device MAC is in the signal's object path: /org/bluez/hciN/dev_AA_BB_..
   const char *path = sd_bus_message_get_path(m);
-  ESPBTDevice device;
+  AdvFrame frame{};
+  frame.evt_type = EVT_TYPE_MERGED;
   bool have_address = false;
   if (path != nullptr) {
     const char *dev = std::strstr(path, "/dev_");
     if (dev != nullptr) {
-      char macbuf[18];
+      char macbuf[MAC_ADDRESS_PRETTY_BUFFER_SIZE];
       // dev_AA_BB_CC_DD_EE_FF -> AA:BB:CC:DD:EE:FF
       std::snprintf(macbuf, sizeof(macbuf), "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c", dev[5], dev[6], dev[8], dev[9], dev[11],
                     dev[12], dev[14], dev[15], dev[17], dev[18], dev[20], dev[21]);
-      uint8_t bd[6];
-      if (parse_bdaddr(macbuf, bd)) {
-        device.set_address(bd);
-        have_address = true;
-      }
+      have_address = parse_bdaddr(macbuf, frame.mac);
     }
   }
   if (!have_address)
     return 0;
 
   // Reuse the a{sv} parser for the changed-properties dict (same signature).
-  self->parse_device1_props_(m, device);
-  self->deliver_device_(std::move(device));
+  self->parse_device1_props_(m, frame);
+  self->enqueue_frame_(frame);
   return 0;
 }
 

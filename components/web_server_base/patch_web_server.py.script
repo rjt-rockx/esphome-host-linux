@@ -27,21 +27,6 @@ def _patch(path: Path, marker: str, replacements: list[tuple[str, str]]) -> None
     path.write_text(new)
 
 
-def _patch_ble_guard(path: Path) -> None:
-    """Expand `#ifdef USE_ESP32` guards in upstream BLE consumers to also accept
-    USE_HOST so they compile against our host-side esp32_ble_tracker shim."""
-    if not path.exists():
-        return
-    src = path.read_text()
-    marker = "// PI_HOST_PATCHED_BLE"
-    if marker in src:
-        return
-    new = src.replace("#ifdef USE_ESP32", "#if defined(USE_ESP32) || defined(USE_HOST)")
-    if new == src:
-        return
-    path.write_text(new + "\n" + marker + "\n")
-
-
 LWIP_DNS_H = """\
 #pragma once
 // Host stub for lwip/dns.h. The MQTT component compiles a DNS resolution path
@@ -94,28 +79,6 @@ def _ensure_lwip_stubs(project_dir: Path) -> None:
         p = lwip_dir / name
         if not p.exists() or p.read_text() != content:
             p.write_text(content)
-
-
-ESP_IDF_VERSION_H = """\
-#pragma once
-// Host stub for <esp_idf_version.h>. There is no ESP-IDF on the host build, but
-// components like xiaomi_ble include this for version-gated code paths. We
-// report a version < 6.0.0 so they take the mbedtls (not PSA/ESP-IDF) branch,
-// which builds natively on Linux.
-
-#define ESP_IDF_VERSION_VAL(major, minor, patch) ((major) * 10000 + (minor) * 100 + (patch))
-#define ESP_IDF_VERSION_MAJOR 5
-#define ESP_IDF_VERSION_MINOR 5
-#define ESP_IDF_VERSION_PATCH 4
-#define ESP_IDF_VERSION ESP_IDF_VERSION_VAL(5, 5, 4)
-"""
-
-
-def _ensure_esp_idf_version_stub(project_dir: Path) -> None:
-    # Placed on the include root (src/) so `#include <esp_idf_version.h>` finds it.
-    p = project_dir / "src" / "esp_idf_version.h"
-    if not p.exists() or p.read_text() != ESP_IDF_VERSION_H:
-        p.write_text(ESP_IDF_VERSION_H)
 
 
 def _patch_host_ip_address(path: Path) -> None:
@@ -198,55 +161,9 @@ def _patch_all(_target, _source, _env):
     mqtt_root = components_root / "mqtt"
 
     _ensure_lwip_stubs(project_dir)
-    _ensure_esp_idf_version_stub(project_dir)
     _patch_host_ip_address(components_root / "network" / "ip_address.h")
     _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
     _patch_spi_final(components_root / "spi" / "spi.h")
-
-    # Expand the USE_ESP32 guard to also accept USE_HOST in the BLE consumer
-    # components, so stock ESPHome BLE listeners compile against our host-side
-    # esp32_ble_tracker shim. These are advertisement-parsing listeners only;
-    # they don't touch ESP-IDF directly. Rather than enumerate every file, walk
-    # the known consumer component dirs and patch any .h/.cpp carrying the guard
-    # — this scales as we verify more consumers. Missing dirs are skipped.
-    ble_consumer_dirs = [
-        "ble_presence",
-        "ble_rssi",
-        "ble_scanner",
-        "xiaomi_ble",
-        "ruuvi_ble",
-        "ruuvitag",
-        "mopeka_ble",
-        "airthings_ble",
-        "thermopro_ble",
-        "atc_mithermometer",
-        "pvvx_mithermometer",
-        "bthome_mithermometer",
-        "b_parasite",
-        # Xiaomi per-device wrappers (each is a thin listener over xiaomi_ble).
-        "xiaomi_lywsd03mmc",
-        "xiaomi_lywsdcgq",
-        "xiaomi_lywsd02",
-        "xiaomi_cgg1",
-        "xiaomi_cgd1",
-        "xiaomi_cgdk2",
-        "xiaomi_gcls002",
-        "xiaomi_hhccjcy01",
-        "xiaomi_hhccpot002",
-        "xiaomi_jqjcy01ym",
-        "xiaomi_mhoc303",
-        "xiaomi_mhoc401",
-        "xiaomi_mjyd02yla",
-        "xiaomi_mue4094rt",
-        "xiaomi_wx08zm",
-        "xiaomi_rtcgq02lm",
-    ]
-    for d in ble_consumer_dirs:
-        comp_dir = components_root / d
-        if not comp_dir.is_dir():
-            continue
-        for f in sorted(comp_dir.glob("*.h")) + sorted(comp_dir.glob("*.cpp")):
-            _patch_ble_guard(f)
 
     _patch(
         mqtt_root / "mqtt_client.h",

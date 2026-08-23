@@ -1,22 +1,24 @@
 #pragma once
 
-// Host-side esp32_ble_tracker: scans BLE advertisements (via BlueZ D-Bus or a
-// raw HCI socket) and dispatches them to registered listeners.
+// Host esp32_ble_tracker: a ble_device_base::BLEHub backed by BlueZ (D-Bus) or
+// a raw HCI socket. Advertisement types come from ble_device_base, so every
+// stock BLE consumer binds to this hub unmodified; the component keeps the
+// esp32_ble_tracker name so core's BLEHub alias ladder selects it.
 
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 
+#include "esphome/components/ble_device_base/ble_device.h"
+#include "esphome/components/ble_device_base/ble_hub.h"
+#include "esphome/components/ble_device_base/scan_response_merger.h"
 #include "esphome/components/esp32_ble/ble_uuid.h"
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <deque>
 #include <mutex>
-#include <optional>
-#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -90,121 +92,24 @@ enum { ESP_GATT_AUTH_REQ_NONE = 0 };
 namespace esphome {
 namespace esp32_ble_tracker {
 
-// Re-export so downstream code can refer to esp32_ble_tracker::ESPBTUUID.
+// The GATT family (ble_client, esp32_ble_client, esp32_ble_server) needs the
+// esp_bt_uuid_t conversions, so it keeps esp32_ble's UUID type; the scanner
+// path uses the neutral one via ble_device_base's advertisement types.
 using ESPBTUUID = esp32_ble::ESPBTUUID;
 
 // Size of an "AA:BB:CC:DD:EE:FF" string including the NUL terminator. Consumers
 // declare fixed buffers of this size for address_str_to().
-static constexpr size_t MAC_ADDRESS_PRETTY_BUFFER_SIZE = 18;
+static constexpr size_t MAC_ADDRESS_PRETTY_BUFFER_SIZE = esphome::MAC_ADDRESS_PRETTY_BUFFER_SIZE;
 
-// Manufacturer/service-data byte payload type used by some parsers.
-using adv_data_t = std::vector<uint8_t>;
-
-struct ServiceData {
-  ESPBTUUID uuid;
-  adv_data_t data;
-};
-
-class ESPBLEiBeacon {
- public:
-  ESPBLEiBeacon() = default;
-  explicit ESPBLEiBeacon(const uint8_t *data) { std::memcpy(&this->beacon_data_, data, sizeof(this->beacon_data_)); }
-  static optional<ESPBLEiBeacon> from_manufacturer_data(const ServiceData &data);
-
-  uint16_t get_major() const {
-    return static_cast<uint16_t>((this->beacon_data_.major >> 8) | ((this->beacon_data_.major & 0xff) << 8));
-  }
-  uint16_t get_minor() const {
-    return static_cast<uint16_t>((this->beacon_data_.minor >> 8) | ((this->beacon_data_.minor & 0xff) << 8));
-  }
-  int8_t get_signal_power() const { return this->beacon_data_.signal_power; }
-  ESPBTUUID get_uuid() const { return ESPBTUUID::from_raw_reversed(this->beacon_data_.proximity_uuid); }
-
- protected:
-  struct __attribute__((packed)) {
-    uint8_t sub_type;
-    uint8_t length;
-    uint8_t proximity_uuid[16];
-    uint16_t major;
-    uint16_t minor;
-    int8_t signal_power;
-  } beacon_data_{};
-};
-
-class ESPBTDevice {
- public:
-  void set_address(const uint8_t addr[6]) { std::memcpy(this->address_, addr, 6); }
-  void set_rssi(int8_t rssi) { this->rssi_ = rssi; }
-  void set_name(std::string name) { this->name_ = std::move(name); }
-  void add_service_uuid(const ESPBTUUID &uuid) { this->service_uuids_.push_back(uuid); }
-  void add_manufacturer_data(ServiceData sd) { this->manufacturer_datas_.push_back(std::move(sd)); }
-  void add_service_data(ServiceData sd) { this->service_datas_.push_back(std::move(sd)); }
-  void set_appearance(uint16_t a) { this->appearance_ = a; }
-  void set_ad_flag(uint8_t f) { this->ad_flag_ = f; }
-  void add_tx_power(int8_t p) { this->tx_powers_.push_back(p); }
-
-  std::string address_str() const;
-  // Format the MAC into a caller-provided buffer (no heap alloc), returning the
-  // buffer pointer.
-  const char *address_str_to(std::span<char, MAC_ADDRESS_PRETTY_BUFFER_SIZE> buf) const {
-    std::snprintf(buf.data(), buf.size(), "%02X:%02X:%02X:%02X:%02X:%02X", this->address_[5], this->address_[4],
-                  this->address_[3], this->address_[2], this->address_[1], this->address_[0]);
-    return buf.data();
-  }
-  uint64_t address_uint64() const;
-  const uint8_t *address() const { return this->address_; }
-  int get_rssi() const { return this->rssi_; }
-  const std::string &get_name() const { return this->name_; }
-  const std::vector<int8_t> &get_tx_powers() const { return this->tx_powers_; }
-  const optional<uint16_t> &get_appearance() const { return this->appearance_; }
-  const optional<uint8_t> &get_ad_flag() const { return this->ad_flag_; }
-  const std::vector<ESPBTUUID> &get_service_uuids() const { return this->service_uuids_; }
-  const std::vector<ServiceData> &get_manufacturer_datas() const { return this->manufacturer_datas_; }
-  const std::vector<ServiceData> &get_service_datas() const { return this->service_datas_; }
-
-  optional<ESPBLEiBeacon> get_ibeacon() const {
-    for (const auto &it : this->manufacturer_datas_) {
-      auto res = ESPBLEiBeacon::from_manufacturer_data(it);
-      if (res.has_value())
-        return res;
-    }
-    return {};
-  }
-
-  // Linux build does not implement Resolvable Private Address resolution
-  // (would need AES-128 via mbedtls/OpenSSL). Always returns false; address
-  // matching by MAC still works.
-  bool resolve_irk(const uint8_t * /*irk*/) const { return false; }
-
- protected:
-  uint8_t address_[6]{};
-  int rssi_{0};
-  std::string name_;
-  std::vector<int8_t> tx_powers_;
-  optional<uint16_t> appearance_;
-  optional<uint8_t> ad_flag_;
-  std::vector<ESPBTUUID> service_uuids_;
-  std::vector<ServiceData> manufacturer_datas_;
-  std::vector<ServiceData> service_datas_;
-};
+// Advertisement types are owned by ble_device_base; re-exported so the repo's
+// own components keep referring to them as espbt::<name>.
+using adv_data_t = ble_device_base::adv_data_t;
+using ServiceData = ble_device_base::ServiceData;
+using ESPBLEiBeacon = ble_device_base::ESPBLEiBeacon;
+using ESPBTDevice = ble_device_base::ESPBTDevice;
+using ESPBTDeviceListener = ble_device_base::ESPBTDeviceListener;
 
 class ESP32BLETracker;
-
-enum class AdvertisementParserType;
-
-class ESPBTDeviceListener {
- public:
-  virtual ~ESPBTDeviceListener() = default;
-  virtual bool parse_device(const ESPBTDevice &device) = 0;
-  // Raw-advertisement path (bluetooth_proxy). Default no-op; the host backend
-  // delivers via parse_device, and the proxy re-serializes parsed fields.
-  virtual bool parse_devices(const ESPBTDevice *devices, size_t count) { return false; }
-  virtual void on_scan_end() {}
-  void set_parent(ESP32BLETracker *parent) { this->parent_ = parent; }
-
- protected:
-  ESP32BLETracker *parent_{nullptr};
-};
 
 // GATT-client connection state machine, shared with GATT-client consumers.
 enum class ClientState : uint8_t {
@@ -225,15 +130,7 @@ enum class ConnectionType : uint8_t {
   V3_WITHOUT_CACHE,
 };
 
-// Scanner state. On host the scan is effectively always running once started,
-// so RUNNING is what gets reported.
-enum class ScannerState {
-  IDLE,
-  STARTING,
-  RUNNING,
-  FAILED,
-  STOPPING,
-};
+using ScannerState = ble_device_base::ScannerState;
 
 // Listener for scanner state changes (bluetooth_proxy implements this).
 class BLEScannerStateListener {
@@ -265,6 +162,7 @@ class ESPBTClient : public ESPBTDeviceListener {
   }
   ClientState state() const { return this->state_; }
 
+  void set_parent(ESP32BLETracker *parent) { this->parent_ = parent; }
   void set_tracker_state_version(uint8_t *version) { this->tracker_state_version_ = version; }
 
   uint8_t app_id;
@@ -277,6 +175,7 @@ class ESPBTClient : public ESPBTDeviceListener {
     }
   }
 
+  ESP32BLETracker *parent_{nullptr};
   bool want_disconnect_{false};
   ClientState state_{ClientState::INIT};
   uint8_t *tracker_state_version_{nullptr};
@@ -300,10 +199,28 @@ class ESP32BLETracker : public Component {
   void dump_config() override;
   float get_setup_priority() const override;
 
-  void register_listener(ESPBTDeviceListener *listener) {
-    listener->set_parent(this);
-    this->listeners_.push_back(listener);
+  // ---- ble_device_base::BLEHub contract ----
+  void register_listener(ble_device_base::ESPBTDeviceListener *listener) {
+    this->dispatcher_.register_listener(listener);
   }
+  void set_raw_advertisement_callback(ble_device_base::RawAdvertisementCallback callback) {
+    this->dispatcher_.set_raw_advertisement_callback(callback);
+  }
+  static constexpr ble_device_base::HubCapabilities get_capabilities() {
+    // Both backends deliver merged frames: BlueZ aggregates advertisement and
+    // scan response into the Device1 properties, and the raw-HCI path runs the
+    // shared ScanResponseMerger. GATT connections still go through the repo's
+    // own BlueZ client rather than a ble_device_base backend.
+    return {.active_scan = true, .merges_scan_response = true, .gatt = false, .scan_mode_switch = false};
+  }
+  /// Adapter address in printable (MSB-first) order; all-zero when it could not
+  /// be read (no adapter, or no permission).
+  void get_adapter_mac(uint8_t out[MAC_ADDRESS_SIZE]) { std::memcpy(out, this->adapter_mac_, MAC_ADDRESS_SIZE); }
+  bool scan_running() { return this->scan_running_.load(std::memory_order_relaxed); }
+  bool scan_active() { return this->scan_active_; }
+  /// Neither backend re-programs the scan type after start, so the mode is
+  /// whatever scan_parameters configured (scan_mode_switch = false).
+  bool request_scan_mode(bool active) { return false; }
 
   // On host the scan is always-on once started, so RUNNING is reported; listeners
   // are notified at setup.
@@ -319,11 +236,28 @@ class ESP32BLETracker : public Component {
     client->set_tracker_state_version(&this->state_version_);
     client->set_parent(this);
     this->clients_.push_back(client);
-    this->listeners_.push_back(client);  // clients are also listeners (parse_device)
+    this->dispatcher_.register_listener(client);  // clients are also listeners (parse_device)
   }
 
  protected:
+  // One advertisement as produced by a scanner thread, drained on the main loop.
+  // 62 bytes = legacy advertisement (31) + scan response (31), matching the
+  // merger's maximum frame.
+  struct AdvFrame {
+    uint8_t mac[MAC_ADDRESS_SIZE];  // controller order (LSB first)
+    int8_t rssi;
+    uint8_t addr_type;
+    uint8_t evt_type;  // HCI advertising event type, or EVT_TYPE_MERGED
+    uint8_t len;
+    uint8_t data[62];
+  };
+  // The D-Bus backend re-encodes already-merged BlueZ properties, so its frames
+  // bypass the merger. Outside the 0x00..0x04 range the HCI spec uses.
+  static constexpr uint8_t EVT_TYPE_MERGED = 0xff;
+
   void try_promote_discovered_clients_();
+  void read_adapter_mac_();
+  void enqueue_frame_(const AdvFrame &frame);
 
   // raw-HCI backend (opt-in)
   void scanner_thread_main_();
@@ -335,11 +269,9 @@ class ESP32BLETracker : public Component {
 
   // D-Bus / BlueZ backend (default)
   void dbus_scanner_thread_main_();
-  bool parse_device1_props_(::sd_bus_message *m, ESPBTDevice &device);
+  bool parse_device1_props_(::sd_bus_message *m, AdvFrame &frame);
   static int on_interfaces_added_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
   static int on_properties_changed_(::sd_bus_message *m, void *userdata, ::sd_bus_error *ret_error);
-
-  void deliver_device_(ESPBTDevice device);
 
   std::string hci_device_name_{"hci0"};
   uint32_t scan_duration_s_{300};
@@ -348,23 +280,29 @@ class ESP32BLETracker : public Component {
   bool scan_active_{true};
   bool scan_continuous_{true};
   bool use_hci_backend_{false};
+  uint8_t adapter_mac_[MAC_ADDRESS_SIZE]{};
 
-  std::vector<ESPBTDeviceListener *> listeners_;
   std::vector<BLEScannerStateListener *> scanner_state_listeners_;
   std::vector<ESPBTClient *> clients_;
   uint8_t state_version_{0};
   uint8_t last_state_version_{0};
   uint8_t app_id_counter_{0};
+  uint32_t scan_period_start_{0};
 
   std::thread scanner_thread_;
   std::atomic<bool> stop_thread_{false};
-  std::atomic<bool> hci_ok_{false};
+  std::atomic<bool> scan_running_{false};
   int hci_fd_{-1};
   int hci_dev_id_{-1};
 
   std::mutex queue_mu_;
-  std::deque<ESPBTDevice> queue_;
+  std::deque<AdvFrame> queue_;
   static constexpr size_t QUEUE_MAX = 128;
+
+  // Shared adv + scan-response merge and frame dispatch (ble_device_base). All
+  // calls run on the main loop.
+  ble_device_base::ScanResponseMerger merger_;
+  ble_device_base::AdvDispatcher dispatcher_;
 };
 
 }  // namespace esp32_ble_tracker

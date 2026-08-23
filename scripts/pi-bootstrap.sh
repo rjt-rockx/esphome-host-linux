@@ -10,7 +10,6 @@ sudo apt-get install -y \
   libmosquitto-dev \
   bluez \
   libsystemd-dev \
-  libmbedtls-dev \
   libcap2-bin \
   python3-pip \
   python3-venv \

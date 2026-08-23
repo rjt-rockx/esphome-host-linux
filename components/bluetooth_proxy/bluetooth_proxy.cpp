@@ -100,21 +100,21 @@ bool BluetoothProxy::parse_device(const esp32_ble_tracker::ESPBTDevice &device) 
     // 16-bit service data: <uuid LE><payload>.
     uint8_t sbuf[31];
     uint8_t n = 0;
-    sbuf[n++] = sd.uuid.get_16bit() & 0xff;
-    sbuf[n++] = (sd.uuid.get_16bit() >> 8) & 0xff;
+    sbuf[n++] = sd.uuid.uuid16() & 0xff;
+    sbuf[n++] = (sd.uuid.uuid16() >> 8) & 0xff;
     uint8_t plen = (uint8_t) std::min<size_t>(sd.data.size(), sizeof(sbuf) - 2);
     std::memcpy(sbuf + n, sd.data.data(), plen);
     n += plen;
     append_ad(0x16, sbuf, n);
   }
-  const std::string &name = device.get_name();
+  const StringRef name = device.get_name();
   if (!name.empty())
     append_ad(0x09, reinterpret_cast<const uint8_t *>(name.data()), (uint8_t) std::min<size_t>(name.size(), 28));
 
   auto &adv = this->response_.advertisements[this->response_.advertisements_len];
   adv.address = device.address_uint64();
   adv.rssi = device.get_rssi();
-  adv.address_type = 0;  // host: parsed adverts don't carry the raw addr type
+  adv.address_type = device.get_address_type();
   adv.data_len = len;
   std::memcpy(adv.data, buf, len);
   this->response_.advertisements_len++;
