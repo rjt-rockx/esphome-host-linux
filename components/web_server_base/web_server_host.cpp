@@ -12,6 +12,7 @@
 #include <netinet/tcp.h>
 #include <signal.h>
 #include <sstream>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -311,7 +312,9 @@ static std::string basic_auth_payload(const optional<std::string> &header) {
   static constexpr char PREFIX[] = "Basic ";
   static constexpr size_t PREFIX_LEN = sizeof(PREFIX) - 1;
   const std::string &v = *header;
-  if (v.compare(0, PREFIX_LEN, PREFIX) != 0)
+  // HTTP auth scheme names are case-insensitive (RFC 9110); clients may send
+  // "basic"/"BASIC". The base64 payload itself stays case-sensitive.
+  if (v.size() < PREFIX_LEN || strncasecmp(v.c_str(), PREFIX, PREFIX_LEN) != 0)
     return {};
   size_t start = v.find_first_not_of(' ', PREFIX_LEN);
   if (start == std::string::npos)
