@@ -51,8 +51,9 @@ LWIP_DNS_H = """\
 // hostname string verbatim.
 
 #include <cstdint>
+#include <cstring>
 #include "lwip/err.h"
-#include "esphome/components/network/ip_address.h"  // brings ip_addr_t = in_addr
+#include "esphome/components/network/ip_address.h"  // brings in ip_addr_t
 
 namespace esphome::network {
 struct IPAddress;
@@ -62,8 +63,10 @@ using dns_found_callback = void (*)(const char *name, const ip_addr_t *ipaddr, v
 
 inline err_t dns_gethostbyname_addrtype(const char *name, ip_addr_t *addr, dns_found_callback /*cb*/, void * /*arg*/,
                                         int /*addrtype*/) {
+  // memset rather than addr->s_addr: with `network: enable_ipv6: true` the host
+  // ip_addr_t is a union struct, not in_addr.
   if (addr != nullptr)
-    addr->s_addr = 0;
+    std::memset(addr, 0, sizeof(*addr));
   return 0;  // ERR_OK — caller proceeds straight to start_connect_().
 }
 
@@ -118,7 +121,11 @@ def _ensure_esp_idf_version_stub(project_dir: Path) -> None:
 def _patch_host_ip_address(path: Path) -> None:
     """Upstream's host IPAddress is missing helpers (is_set/is_ip4/...) that
     components like mqtt_client.cpp call on every platform. Drop in
-    no-frills implementations on the USE_HOST branch."""
+    no-frills implementations on the USE_HOST branch.
+
+    esphome#17067 added these to the host USE_NETWORK_IPV6 branch only; the
+    default (non-IPv6) host branch still lacks them, which is what the needle
+    below targets."""
     if not path.exists():
         return
     src = path.read_text()

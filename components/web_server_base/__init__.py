@@ -21,13 +21,8 @@ DEPENDENCIES = ["network"]
 
 
 def AUTO_LOAD():
-    if CORE.is_host:
-        # Our shim is bundled here; no extra components needed.
-        return []
-    if CORE.is_esp32:
-        return ["web_server_idf"]
-    if CORE.using_arduino:
-        return ["async_tcp"]
+    # Host-only shadow: on any other platform the stock component must be used
+    # (see to_code), so nothing to auto-load here.
     return []
 
 
@@ -44,7 +39,18 @@ def _consume_web_server_base_sockets(config):
     return config
 
 
+def _host_only(config):
+    if not CORE.is_host:
+        raise cv.Invalid(
+            "This web_server_base is a host-only shadow of the upstream "
+            "component. Restrict this repository's external_components entry to "
+            "host builds to use the stock web_server_base elsewhere."
+        )
+    return config
+
+
 CONFIG_SCHEMA = cv.All(
+    _host_only,
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(WebServerBase),
@@ -81,40 +87,13 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     cg.add(cg.RawExpression(f"{web_server_base_ns}::global_web_server_base = {var}"))
 
-    if CORE.is_host:
-        cg.add_define("WEB_SERVER_DEFAULT_HEADERS_COUNT", 1)
-        # pthread for the std::thread accept loop.
-        cg.add_build_flag("-pthread")
-        # Pre-script that injects USE_HOST branches into web_server.h /
-        # list_entities.{h,cpp} before PIO compiles them. Idempotent.
-        script_dst = CORE.relative_build_path("patch_web_server.py")
-        copy_file_if_changed(
-            Path(__file__).parent / "patch_web_server.py.script", script_dst
-        )
-        existing = CORE.platformio_options.get("extra_scripts", []) or []
-        if "pre:patch_web_server.py" not in existing:
-            CORE.add_platformio_option(
-                "extra_scripts", ["pre:patch_web_server.py"]
-            )
-        return
-
-    if CORE.is_esp32:
-        cg.add_define("WEB_SERVER_DEFAULT_HEADERS_COUNT", 1)
-        return
-
-    if CORE.using_arduino:
-        if CORE.is_esp8266:
-            cg.add_library("ESP8266WiFi", None)
-        if CORE.is_libretiny:
-            CORE.add_platformio_option("lib_ignore", ["ESPAsyncTCP", "RPAsyncTCP"])
-        if CORE.is_rp2040:
-            CORE.add_platformio_option(
-                "lib_ignore", ["ESPAsyncTCP", "AsyncTCP", "AsyncTCP_RP2040W"]
-            )
-            cg.add_library("Hash", None)
-            copy_file_if_changed(
-                Path(__file__).parent / "fix_rp2040_hash.py.script",
-                CORE.relative_build_path("fix_rp2040_hash.py"),
-            )
-            cg.add_platformio_option("extra_scripts", ["pre:fix_rp2040_hash.py"])
-        cg.add_library("ESP32Async/ESPAsyncWebServer", "3.9.6")
+    cg.add_define("WEB_SERVER_DEFAULT_HEADERS_COUNT", 1)
+    # pthread for the std::thread accept loop.
+    cg.add_build_flag("-pthread")
+    # Pre-script that injects USE_HOST branches into web_server.h /
+    # list_entities.{h,cpp} before PIO compiles them. Idempotent.
+    script_dst = CORE.relative_build_path("patch_web_server.py")
+    copy_file_if_changed(Path(__file__).parent / "patch_web_server.py.script", script_dst)
+    existing = CORE.platformio_options.get("extra_scripts", []) or []
+    if "pre:patch_web_server.py" not in existing:
+        CORE.add_platformio_option("extra_scripts", ["pre:patch_web_server.py"])

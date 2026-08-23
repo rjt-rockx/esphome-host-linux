@@ -16,6 +16,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
 #ifdef USE_WEBSERVER
@@ -535,8 +536,10 @@ void AsyncEventSource::handleRequest(AsyncWebServerRequest *request) {
   if (this->on_connect_)
     this->on_connect_(session);
   // The web server stops looping when no SSE clients are connected; wake it so
-  // subsequent ticks service this session.
+  // subsequent ticks service this session. Called from the connection thread,
+  // so the main loop may be asleep in select().
   this->web_server_->enable_loop_soon_any_context();
+  App.wake_loop_threadsafe();
 }
 
 bool AsyncEventSource::loop() {

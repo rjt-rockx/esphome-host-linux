@@ -81,6 +81,7 @@ exec(  # noqa: S102 — sanctioned execution of trusted upstream code path.
 _upstream_to_code = to_code  # noqa: F821 — defined by exec above.
 
 
+@coroutine_with_priority(CoroPriority.WEB)  # noqa: F821 — from exec'd upstream.
 async def to_code(config):  # noqa: F811 — override upstream coroutine.
     await _upstream_to_code(config)
 

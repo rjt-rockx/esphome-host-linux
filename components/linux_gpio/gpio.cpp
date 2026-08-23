@@ -3,6 +3,7 @@
 
 #include "gpio.h"
 
+#include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
 #include <fcntl.h>
@@ -315,6 +316,7 @@ void GPIOAlertThread::run_() {
       (void) read(this->wake_rfd_, buf, sizeof(buf));
     }
 
+    bool fired = false;
     for (size_t i = 1; i < pfds.size(); i++) {
       if (!(pfds[i].revents & POLLIN))
         continue;
@@ -328,10 +330,16 @@ void GPIOAlertThread::run_() {
           if (snapshot[i - 1].func != nullptr)
             snapshot[i - 1].func(snapshot[i - 1].arg);
         }
+        fired = true;
         if (count < sizeof(evs) / sizeof(evs[0]))
           break;  // partial batch -> FIFO drained
       }
     }
+
+    // The ISR callbacks only flag state for the main loop, which may be asleep
+    // in select() for up to the loop interval.
+    if (fired)
+      App.wake_loop_threadsafe();
   }
 }
 

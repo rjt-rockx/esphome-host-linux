@@ -9,12 +9,12 @@ ESPHome's `host` platform compiles configs to a native Linux binary but stubs ou
 ## What works
 
 - **`linux_gpio`** -- GPIO via the kernel character-device v2 ABI (`<linux/gpio.h>`, **no external library**). Input, output, internal pulls, and edge interrupts. Per-pin `chip:` selects the gpiochip (defaults to `/dev/gpiochip0`); optional `debounce_us:` enables kernel-side debounce.
-- **`linux_i2c`** -- *(deprecated)* I2C via `/dev/i2c-N` ioctls. ESPHome **2026.6.0** added native host I2C upstream ([#14489](https://github.com/esphome/esphome/pull/14489)) -- prefer `i2c: { device: /dev/i2c-N }`. `linux_i2c` still works and emits a deprecation warning at build time; stock `i2c:`-based sensors (BME280, etc.) work either way.
+- **I2C** -- use upstream `i2c: { device: /dev/i2c-N }`; ESPHome **2026.6.0** added native host I2C ([#14489](https://github.com/esphome/esphome/pull/14489)). The old `linux_i2c` component was removed and now fails validation with the replacement snippet.
 - **`linux_spi`** -- SPI via `/dev/spidev*` ioctls. Stock `spi:`-based sensors work (MAX31865, etc.). Upstream `spi:` has no host support, so this component is the only path.
 - **`socketcan`** -- CAN bus via the kernel SocketCAN API (`<linux/can.h>`, no external library). A `canbus:` platform. Bring the interface up first with `ip link set canX up type can bitrate N` (the bitrate isn't settable from userspace); the compiled binary needs `cap_net_raw`.
 - **`linux_sysfs_sensor`** -- publish any numeric sysfs attribute (SoC temperature, hwmon volts, IIO ADC) as a `sensor:` with an explicit `path:` + `scale:`. No auto-discovery -- `hwmonN`/`iio:deviceN` indices aren't stable across boots, so pin the exact path (check `cat /sys/class/hwmon/hwmon*/name` first).
 - **`linux_w1`** -- 1-Wire via kernel `/sys/bus/w1/`. DS18B20 and friends.
-- **`linux_time`** -- expose the kernel wall clock as a `time:` platform.
+- **`linux_time`** -- *(deprecated)* expose the kernel wall clock as a `time:` platform. Upstream `time: { platform: host }` does the same; `linux_time` still works and warns at build time.
 - **UART** -- ESPHome's upstream `uart:` already handles `port: /dev/ttyXXX` on host.
 - **`web_server`** -- upstream component runs unmodified; we ship a `web_server_base` shadow that provides an `AsyncWebServer` shim over POSIX sockets.
 - **`mqtt`** -- upstream component runs unmodified; the host backend wraps libmosquitto.
