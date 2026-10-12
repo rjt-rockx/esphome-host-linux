@@ -160,9 +160,11 @@ class AsyncWebServerRequest {
   const std::string &body() const { return this->body_; }
 
 #ifdef USE_WEBSERVER_AUTH
-  bool authenticate(const char *username, const char *password) const;
+  // Basic auth: compares the Authorization header with base64("user:pass").
+  bool authenticate(const char *basic_auth_hash) const;
+  // Replies 401 with a Basic challenge.
   // NOLINTNEXTLINE(readability-identifier-naming)
-  void requestAuthentication(const char *realm = nullptr) const;
+  void requestAuthentication(const char *realm = nullptr);
 #endif
 
   void redirect(const std::string &url);

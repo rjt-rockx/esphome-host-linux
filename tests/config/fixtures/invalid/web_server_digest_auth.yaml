@@ -1,0 +1,11 @@
+# EXPECT_ERROR: digest
+esphome:
+  name: web-digest-auth
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+web_server:
+  auth:
+    type: digest
+    username: admin
+    password: secret

@@ -59,14 +59,19 @@ __path__ = [str(_upstream_dir)]
 # discovery and esphome.h codegen find them.
 _shadow_dir = Path(__file__).parent
 _upstream_marker = _shadow_dir / ".upstream_synced"
+import filecmp as _filecmp  # noqa: E402
 import shutil as _shutil  # noqa: E402
+
+# Compare contents, not mtimes: wheels carry their build-time mtimes, so after
+# a `pip install -U esphome` the copies from the previous version look newer
+# and would otherwise be kept.
 for _entry in _upstream_dir.iterdir():
     if not _entry.is_file():
         continue
     if _entry.suffix in (".py",):
         continue
     _dst = _shadow_dir / _entry.name
-    if not _dst.exists() or _dst.stat().st_mtime < _entry.stat().st_mtime:
+    if not _dst.exists() or not _filecmp.cmp(_entry, _dst, shallow=False):
         _shutil.copy2(_entry, _dst)
 _upstream_marker.write_text(str(_esphome.__file__))
 

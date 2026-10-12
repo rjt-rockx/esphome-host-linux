@@ -1,0 +1,10 @@
+# EXPECT_ERROR: No BLE tracker
+esphome:
+  name: ble-no-tracker
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+binary_sensor:
+  - platform: ble_presence
+    name: presence
+    mac_address: A4:C1:38:00:00:10

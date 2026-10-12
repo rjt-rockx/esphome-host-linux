@@ -7,6 +7,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -301,8 +302,26 @@ std::string AsyncWebServerRequest::arg(const char *name) {
 }
 
 #ifdef USE_WEBSERVER_AUTH
-bool AsyncWebServerRequest::authenticate(const char *, const char *) const { return true; }
-void AsyncWebServerRequest::requestAuthentication(const char *) const {}
+bool AsyncWebServerRequest::authenticate(const char *basic_auth_hash) const {
+  if (basic_auth_hash == nullptr)
+    return true;
+  auto header = this->get_header("authorization");
+  if (!header.has_value())
+    return false;
+  static constexpr const char *PREFIX = "Basic ";
+  static constexpr size_t PREFIX_LEN = 6;
+  if (header->size() <= PREFIX_LEN || strncasecmp(header->c_str(), PREFIX, PREFIX_LEN) != 0)
+    return false;
+  return header->compare(PREFIX_LEN, std::string::npos, basic_auth_hash) == 0;
+}
+
+void AsyncWebServerRequest::requestAuthentication(const char *realm) {
+  char challenge[96];
+  snprintf(challenge, sizeof(challenge), "Basic realm=\"%s\"", realm != nullptr ? realm : "Login Required");
+  auto *r = this->beginResponse(401, "text/plain", std::string("Unauthorized"));
+  r->addHeader("WWW-Authenticate", challenge);
+  this->send(r);
+}
 #endif
 
 // ---------------------------------------------------------------------------
