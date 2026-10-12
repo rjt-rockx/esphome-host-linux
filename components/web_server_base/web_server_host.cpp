@@ -588,10 +588,11 @@ bool AsyncEventSource::loop() {
   return !this->sessions_.empty();
 }
 
-void AsyncEventSource::try_send_nodefer(const char *message, const char *event, uint32_t id, uint32_t reconnect) {
+void AsyncEventSource::try_send_nodefer(const char *message, size_t message_len, const char *event, uint32_t id,
+                                        uint32_t reconnect) {
   std::lock_guard<std::mutex> g(this->sessions_mu_);
   for (auto *s : this->sessions_)
-    s->try_send_nodefer(message, event, id, reconnect);
+    s->try_send_nodefer(message, message_len, event, id, reconnect);
 }
 
 void AsyncEventSource::deferrable_send_state(void *source, const char *event_type,
@@ -635,7 +636,8 @@ bool AsyncEventSourceResponse::send_raw_(const std::string &chunk) {
   return true;
 }
 
-static std::string build_sse_frame_(const char *message, const char *event, uint32_t id, uint32_t reconnect) {
+static std::string build_sse_frame_(const char *message, size_t message_len, const char *event, uint32_t id,
+                                    uint32_t reconnect) {
   std::string frame;
   if (event != nullptr && *event != '\0') {
     frame += "event: ";
@@ -654,11 +656,12 @@ static std::string build_sse_frame_(const char *message, const char *event, uint
   }
   // Message body — escape any embedded newlines into "data: <chunk>\n" per line.
   const char *p = message;
+  const char *end = message + message_len;
   while (true) {
-    const char *nl = std::strchr(p, '\n');
+    const auto *nl = static_cast<const char *>(std::memchr(p, '\n', static_cast<size_t>(end - p)));
     frame += "data: ";
     if (nl == nullptr) {
-      frame += p;
+      frame.append(p, static_cast<size_t>(end - p));
       frame += "\n";
       break;
     }
@@ -670,9 +673,9 @@ static std::string build_sse_frame_(const char *message, const char *event, uint
   return frame;
 }
 
-bool AsyncEventSourceResponse::try_send_nodefer(const char *message, const char *event, uint32_t id,
-                                                uint32_t reconnect) {
-  return this->send_raw_(build_sse_frame_(message, event, id, reconnect));
+bool AsyncEventSourceResponse::try_send_nodefer(const char *message, size_t message_len, const char *event,
+                                                uint32_t id, uint32_t reconnect) {
+  return this->send_raw_(build_sse_frame_(message, message_len, event, id, reconnect));
 }
 
 void AsyncEventSourceResponse::deq_push_back_with_dedup_(void *source, message_generator_t *message_generator) {
@@ -699,7 +702,7 @@ void AsyncEventSourceResponse::process_deferred_queue_() {
     auto ev = this->deferred_queue_.front();
     auto buf = ev.message_generator_(this->web_server_, ev.source_);
     if (buf.size() > 0) {
-      auto frame = build_sse_frame_(buf.c_str(), "state", 0, 0);
+      auto frame = build_sse_frame_(buf.c_str(), buf.size(), "state", 0, 0);
       if (!this->send_raw_(frame))
         return;
     }

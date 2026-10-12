@@ -136,6 +136,39 @@ def _patch_seesaw_readbuf(path: Path) -> None:
     path.write_text(src.replace(needle, repl, 1))
 
 
+def _patch_seesaw_dump_summary(seesaw_dir: Path) -> None:
+    """ESPHome 2026.9 changed GPIOPin::dump_summary() to write into a caller
+    buffer; ssieb's seesaw still overrides the old std::string form, which no
+    longer compiles on any platform. Port SeesawGPIOPin to the new signature."""
+    header = seesaw_dir / "seesaw.h"
+    if not header.exists() or "std::string dump_summary() const override;" not in header.read_text():
+        return  # not used, or already on the new API upstream
+    _patch(
+        seesaw_dir / "seesaw.h",
+        marker="// PI_HOST_PATCHED_SEESAW_SUMMARY",
+        replacements=[
+            (
+                "  std::string dump_summary() const override;",
+                "  size_t dump_summary(char *buffer, size_t len) const override;",
+            ),
+        ],
+    )
+    _patch(
+        seesaw_dir / "seesaw.cpp",
+        marker="// PI_HOST_PATCHED_SEESAW_SUMMARY",
+        replacements=[
+            (
+                "std::string SeesawGPIOPin::dump_summary() const {\n"
+                '  return str_sprintf("%u via SeeSaw", this->pin_);\n'
+                "}",
+                "size_t SeesawGPIOPin::dump_summary(char *buffer, size_t len) const {\n"
+                '  return buf_append_printf(buffer, len, 0, "%u via SeeSaw", this->pin_);\n'
+                "}",
+            ),
+        ],
+    )
+
+
 def _patch_all(_target, _source, _env):
     project_dir = Path(env.subst("$PROJECT_DIR"))  # type: ignore  # noqa: F821
 
@@ -146,6 +179,7 @@ def _patch_all(_target, _source, _env):
     _ensure_lwip_stubs(project_dir)
     _patch_host_ip_address(components_root / "network" / "ip_address.h")
     _patch_seesaw_readbuf(components_root / "seesaw" / "seesaw.cpp")
+    _patch_seesaw_dump_summary(components_root / "seesaw")
 
     _patch(
         mqtt_root / "mqtt_client.h",

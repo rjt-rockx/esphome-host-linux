@@ -51,8 +51,14 @@ class LinuxSPIBus : public spi::SPIBus {
   int fd_{-1};
 };
 
-class LinuxSPIComponent : public spi::SPIComponent {
+// spi::SPIComponent is final as of ESPHome 2026.9 and only builds hardware
+// buses through a per-platform static get_bus(), which is a stub on host. So
+// the YAML id is declared as a stock (unregistered) SPIComponent that devices
+// bind to, and this component opens the spidev fd and installs a LinuxSPIBus
+// into it during setup, before any SPI device runs spi_setup().
+class LinuxSPIComponent : public Component {
  public:
+  void set_spi(spi::SPIComponent *spi) { spi_ = spi; }
   void set_device(std::string device) { device_path_ = std::move(device); }
 
   void setup() override;
@@ -60,6 +66,7 @@ class LinuxSPIComponent : public spi::SPIComponent {
   float get_setup_priority() const override { return setup_priority::BUS; }
 
  protected:
+  spi::SPIComponent *spi_{nullptr};
   std::string device_path_;
   int fd_{-1};
 };

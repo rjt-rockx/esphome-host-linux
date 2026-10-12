@@ -61,6 +61,10 @@ class AsyncWebParameter {
   std::string value_;
 };
 
+// web_server reads headers through the Arduino-style getHeader() on every
+// non-ESP32 platform, host included.
+using AsyncWebHeader = AsyncWebParameter;
+
 class AsyncWebServerResponse {
  public:
   AsyncWebServerResponse(const AsyncWebServerRequest *req) : req_(req) {}
@@ -220,6 +224,14 @@ class AsyncWebServerRequest {
   optional<std::string> get_header(const char *name) const;
   // NOLINTNEXTLINE(readability-identifier-naming)
   bool hasHeader(const char *name) const { return this->get_header(name).has_value(); }
+  // Pointer stays valid for the lifetime of the request.
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  const AsyncWebHeader *getHeader(const char *name) {
+    auto value = this->get_header(name);
+    if (!value.has_value())
+      return nullptr;
+    return &this->header_cache_.emplace_back(name, std::move(*value));
+  }
 
   int get_fd() const { return this->fd_; }
 
@@ -241,6 +253,7 @@ class AsyncWebServerRequest {
   std::map<std::string, std::string, std::less<>> headers_;
   std::string body_;
   std::vector<AsyncWebParameter *> params_;
+  std::list<AsyncWebHeader> header_cache_;
   AsyncWebServerResponse *rsp_{nullptr};
   std::vector<std::pair<std::string, std::string>> response_extra_headers_{};
   int response_code_{200};
@@ -325,7 +338,8 @@ class AsyncEventSourceResponse {
   friend class AsyncEventSource;
 
  public:
-  bool try_send_nodefer(const char *message, const char *event = nullptr, uint32_t id = 0, uint32_t reconnect = 0);
+  bool try_send_nodefer(const char *message, size_t message_len, const char *event = nullptr, uint32_t id = 0,
+                        uint32_t reconnect = 0);
   void deferrable_send_state(void *source, const char *event_type, message_generator_t *message_generator);
   void loop();
 
@@ -373,7 +387,8 @@ class AsyncEventSource : public AsyncWebHandler {
   // NOLINTNEXTLINE(readability-identifier-naming)
   void onDisconnect(std::function<void(AsyncEventSourceClient *)> &&cb) { this->on_disconnect_ = std::move(cb); }
 
-  void try_send_nodefer(const char *message, const char *event = nullptr, uint32_t id = 0, uint32_t reconnect = 0);
+  void try_send_nodefer(const char *message, size_t message_len, const char *event = nullptr, uint32_t id = 0,
+                        uint32_t reconnect = 0);
   void deferrable_send_state(void *source, const char *event_type, message_generator_t *message_generator);
   bool loop();
   bool empty() { return this->count() == 0; }

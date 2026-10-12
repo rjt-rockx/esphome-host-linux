@@ -14,11 +14,8 @@ DEFAULT_DEVICE = "/dev/spidev0.0"
 
 linux_spi_ns = cg.esphome_ns.namespace("linux_spi")
 spi_ns = cg.esphome_ns.namespace("spi")
-LinuxSPIComponent = linux_spi_ns.class_(
-    "LinuxSPIComponent",
-    spi_ns.class_("SPIComponent"),
-    cg.Component,
-)
+LinuxSPIComponent = linux_spi_ns.class_("LinuxSPIComponent", cg.Component)
+CONF_LINUX_SPI_ID = "linux_spi_id"
 
 # Teach upstream's spi component about host. The top-level CONFIG_SCHEMA
 # requires clk/miso/mosi pins and restricts the platform list; the to_code
@@ -59,7 +56,10 @@ if not getattr(_upstream_spi, _PATCHED_FLAG, False):
 
 CONFIG_SCHEMA = cv.Schema(
     {
-        cv.GenerateID(): cv.declare_id(LinuxSPIComponent),
+        # Devices bind to the stock SPIComponent (final since 2026.9); the
+        # LinuxSPIComponent installs the spidev bus into it at setup.
+        cv.GenerateID(): cv.declare_id(_upstream_spi.SPIComponent),
+        cv.GenerateID(CONF_LINUX_SPI_ID): cv.declare_id(LinuxSPIComponent),
         cv.Optional(CONF_DEVICE, default=DEFAULT_DEVICE): cv.string,
     }
 ).extend(cv.COMPONENT_SCHEMA)
@@ -69,6 +69,8 @@ CONFIG_SCHEMA = cv.Schema(
 async def to_code(config):
     cg.add_define("USE_SPI")
     cg.add_global(spi_ns.using)
-    var = cg.new_Pvariable(config[CONF_ID])
+    spi = cg.new_Pvariable(config[CONF_ID])
+    var = cg.new_Pvariable(config[CONF_LINUX_SPI_ID])
     await cg.register_component(var, config)
+    cg.add(var.set_spi(spi))
     cg.add(var.set_device(config[CONF_DEVICE]))
