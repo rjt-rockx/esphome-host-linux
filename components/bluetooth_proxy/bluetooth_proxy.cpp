@@ -31,6 +31,9 @@ void BluetoothProxy::setup() {
   this->configured_scan_active_ = this->parent_->get_scan_active();
 
   this->parent_->add_scanner_state_listener(this);
+  this->parent_->set_raw_advertisement_callback({this, [](void *self, const ble_device_base::RawAdvertisement &adv) {
+                                                   static_cast<BluetoothProxy *>(self)->on_raw_advertisement_(adv);
+                                                 }});
 }
 
 void BluetoothProxy::on_scanner_state(esp32_ble_tracker::ScannerState state) {
@@ -69,59 +72,32 @@ void BluetoothProxy::handle_gatt_not_connected_(uint64_t address, uint16_t handl
   this->send_gatt_error(address, handle, ESP_GATT_NOT_CONNECTED);
 }
 
-// BlueZ delivers PARSED advertisements, not the raw PDU. Re-serialize the parsed
-// fields into a standard AD payload and forward it to HA as a raw advertisement;
-// HA's parsers consume the manufacturer/service data fields, which is what nearly
-// all consumers need. Byte-exact raw bytes would require a raw-HCI path.
-bool BluetoothProxy::parse_device(const esp32_ble_tracker::ESPBTDevice &device) {
+// Advertisements arrive through the tracker's raw callback as AD structures:
+// byte-exact from the raw-HCI backend, re-encoded from BlueZ's decoded fields on
+// the D-Bus backend. Forward them to the API as raw advertisements, truncated to
+// the 62-byte API field at an AD-structure boundary.
+void BluetoothProxy::on_raw_advertisement_(const ble_device_base::RawAdvertisement &raw) {
   if (!api::global_api_server->is_connected() || this->api_connection_ == nullptr)
-    return false;
+    return;
 
-  // Build a minimal AD structure list from the parsed fields.
-  uint8_t buf[62];
-  uint8_t len = 0;
-  auto append_ad = [&](uint8_t type, const uint8_t *data, uint8_t dlen) {
-    if (len + 2 + dlen > (uint8_t) sizeof(buf))
-      return;
-    buf[len++] = dlen + 1;
-    buf[len++] = type;
-    std::memcpy(buf + len, data, dlen);
-    len += dlen;
-  };
-  if (device.get_ad_flag().has_value()) {
-    uint8_t f = *device.get_ad_flag();
-    append_ad(0x01, &f, 1);
+  uint16_t len = 0;
+  while (len < raw.data_len) {
+    uint16_t next = len + 1 + raw.data[len];
+    if (next > raw.data_len || next > sizeof(api::BluetoothLERawAdvertisement::data))
+      break;
+    len = next;
   }
-  for (const auto &md : device.get_manufacturer_datas()) {
-    // md.data already carries the 2-byte company id prefix (host tracker packs it).
-    append_ad(0xFF, md.data.data(), (uint8_t) std::min<size_t>(md.data.size(), 30));
-  }
-  for (const auto &sd : device.get_service_datas()) {
-    // 16-bit service data: <uuid LE><payload>.
-    uint8_t sbuf[31];
-    uint8_t n = 0;
-    sbuf[n++] = sd.uuid.get_16bit() & 0xff;
-    sbuf[n++] = (sd.uuid.get_16bit() >> 8) & 0xff;
-    uint8_t plen = (uint8_t) std::min<size_t>(sd.data.size(), sizeof(sbuf) - 2);
-    std::memcpy(sbuf + n, sd.data.data(), plen);
-    n += plen;
-    append_ad(0x16, sbuf, n);
-  }
-  const std::string &name = device.get_name();
-  if (!name.empty())
-    append_ad(0x09, reinterpret_cast<const uint8_t *>(name.data()), (uint8_t) std::min<size_t>(name.size(), 28));
 
   auto &adv = this->response_.advertisements[this->response_.advertisements_len];
-  adv.address = device.address_uint64();
-  adv.rssi = device.get_rssi();
-  adv.address_type = 0;  // host: parsed adverts don't carry the raw addr type
-  adv.data_len = len;
-  std::memcpy(adv.data, buf, len);
+  adv.address = raw.address;
+  adv.rssi = raw.rssi;
+  adv.address_type = raw.addr_type;
+  adv.data_len = static_cast<uint8_t>(len);
+  std::memcpy(adv.data, raw.data, len);
   this->response_.advertisements_len++;
 
   if (this->response_.advertisements_len >= BLUETOOTH_PROXY_ADVERTISEMENT_BATCH_SIZE)
     this->flush_pending_advertisements_();
-  return true;
 }
 
 void BluetoothProxy::log_advertisement_flush_() {

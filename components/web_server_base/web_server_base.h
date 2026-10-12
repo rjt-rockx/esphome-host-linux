@@ -48,9 +48,12 @@ class MiddlewareHandler : public AsyncWebHandler {
 };
 
 #ifdef USE_WEBSERVER_AUTH
+// All fields point to string literals in generated code; nothing is copied.
+// Host supports basic auth only (digest is rejected at config time), so the
+// credentials are the base64("username:password") hash web_server precomputes.
 struct Credentials {
-  std::string username;
-  std::string password;
+  const char *basic_auth_hash{nullptr};
+  bool is_set() const { return basic_auth_hash != nullptr; }
 };
 
 class AuthMiddlewareHandler : public MiddlewareHandler {
@@ -59,7 +62,7 @@ class AuthMiddlewareHandler : public MiddlewareHandler {
       : MiddlewareHandler(next), credentials_(credentials) {}
 
   bool check_auth(AsyncWebServerRequest *request) {
-    bool success = request->authenticate(credentials_->username.c_str(), credentials_->password.c_str());
+    bool success = request->authenticate(credentials_->basic_auth_hash);
     if (!success) {
       request->requestAuthentication();
     }
@@ -90,11 +93,17 @@ class AuthMiddlewareHandler : public MiddlewareHandler {
 
 }  // namespace internal
 
-class WebServerBase {
+class WebServerBase final {
  public:
+  // Mirrors upstream (2026.9): the server is created once and never deleted;
+  // init()/deinit() refcount users and start/stop the listener.
   void init() {
-    if (this->initialized_) {
-      this->initialized_++;
+    this->initialized_++;
+    if (this->server_ != nullptr) {
+      if (this->initialized_ == 1) {
+        // Restart the listener after a previous deinit()
+        this->server_->begin();
+      }
       return;
     }
     this->server_ = new AsyncWebServer(this->port_);
@@ -103,21 +112,19 @@ class WebServerBase {
 
     for (auto *handler : this->handlers_)
       this->server_->addHandler(handler);
-
-    this->initialized_++;
   }
   void deinit() {
+    if (this->initialized_ == 0)
+      return;  // unbalanced deinit()
     this->initialized_--;
     if (this->initialized_ == 0) {
-      delete this->server_;
-      this->server_ = nullptr;
+      this->server_->end();
     }
   }
   AsyncWebServer *get_server() const { return this->server_; }
 
 #ifdef USE_WEBSERVER_AUTH
-  void set_auth_username(std::string auth_username) { credentials_.username = std::move(auth_username); }
-  void set_auth_password(std::string auth_password) { credentials_.password = std::move(auth_password); }
+  void set_auth_basic_hash(const char *hash) { credentials_.basic_auth_hash = hash; }
 #endif
 
   void add_handler(AsyncWebHandler *handler);

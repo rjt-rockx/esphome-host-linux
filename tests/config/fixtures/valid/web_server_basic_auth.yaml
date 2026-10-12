@@ -1,0 +1,10 @@
+esphome:
+  name: web-basic-auth
+host:
+external_components:
+  - source: {type: local, path: ../../../../components}
+web_server:
+  auth:
+    type: basic
+    username: admin
+    password: secret

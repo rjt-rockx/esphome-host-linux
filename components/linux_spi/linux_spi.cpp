@@ -18,6 +18,19 @@ namespace linux_spi {
 
 static const char *const TAG = "linux_spi";
 
+// SPIComponent::spi_bus_ is protected and the class is final, so there is no
+// subclass to reach it through. Explicit template instantiation is exempt from
+// access checks, which lets us take the member pointer without patching
+// upstream. A rename upstream fails to compile here rather than misbehaving.
+struct SPIBusMember {
+  using type = spi::SPIBus *spi::SPIComponent::*;
+  friend type spi_bus_member(SPIBusMember);
+};
+template<typename Tag, typename Tag::type M> struct MemberAccess {
+  friend typename Tag::type spi_bus_member(Tag) { return M; }
+};
+template struct MemberAccess<SPIBusMember, &spi::SPIComponent::spi_bus_>;
+
 // spidev bounds a single SPI_IOC_MESSAGE by its module 'bufsiz' parameter
 // (default 4096); larger transfers are split into chunks of this size.
 static const size_t SPI_CHUNK_MAX = 4096;
@@ -140,7 +153,8 @@ void LinuxSPIComponent::setup() {
     ESP_LOGW(TAG, "SPI_IOC_WR_BITS_PER_WORD failed: %s", strerror(errno));
 
   // Drive the spidev fd directly; no GPIO pin setup needed.
-  this->spi_bus_ = new LinuxSPIBus(this->fd_);  // NOLINT(cppcoreguidelines-owning-memory)
+  // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+  this->spi_->*spi_bus_member(SPIBusMember{}) = new LinuxSPIBus(this->fd_);
   ESP_LOGI(TAG, "Opened %s (fd=%d)", this->device_path_.c_str(), this->fd_);
 }
 

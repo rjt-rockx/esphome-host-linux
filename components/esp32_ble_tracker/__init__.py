@@ -15,7 +15,7 @@ from pathlib import Path
 
 from esphome import automation
 import esphome.codegen as cg
-from esphome.components import esp32_ble
+from esphome.components import ble_device_base, esp32_ble
 from esphome.components.esp32_ble import (
     bt_uuid,
     bt_uuid16_format,
@@ -42,7 +42,12 @@ from esphome.helpers import copy_file_if_changed
 
 CODEOWNERS = ["@rjt-rockx"]
 DEPENDENCIES = []
-AUTO_LOAD = ["esp32_ble"]
+AUTO_LOAD = ["ble_device_base", "esp32_ble"]
+
+# Upstream BLE consumers bind to whichever component provides a BLEHub; without
+# this registration they reject every host config ("No BLE tracker exists for
+# host").
+ble_device_base.register_hub_provider("esp32_ble_tracker")
 
 CONF_ESP32_BLE_ID = "esp32_ble_id"
 CONF_SCAN_PARAMETERS = "scan_parameters"
@@ -52,8 +57,12 @@ CONF_HCI_DEVICE = "hci_device"
 CONF_HCI_BACKEND = "hci_backend"
 
 esp32_ble_tracker_ns = cg.esphome_ns.namespace("esp32_ble_tracker")
-ESP32BLETracker = esp32_ble_tracker_ns.class_("ESP32BLETracker", cg.Component)
-ESPBTDeviceListener = esp32_ble_tracker_ns.class_("ESPBTDeviceListener")
+ESP32BLETracker = esp32_ble_tracker_ns.class_(
+    "ESP32BLETracker", ble_device_base.BLEHub, cg.Component
+)
+ESPBTDeviceListener = esp32_ble_tracker_ns.class_(
+    "ESPBTDeviceListener", ble_device_base.ESPBTDeviceListener
+)
 ESPBTClient = esp32_ble_tracker_ns.class_("ESPBTClient", ESPBTDeviceListener)
 ESPBTDevice = esp32_ble_tracker_ns.class_("ESPBTDevice")
 ESPBTDeviceConstRef = ESPBTDevice.operator("ref").operator("const")
@@ -104,45 +113,52 @@ ESPBTAdvertiseTrigger = esp32_ble_tracker_ns.class_(
 )
 
 
-CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(ESP32BLETracker),
-        cv.Optional(CONF_HCI_DEVICE, default="hci0"): cv.string,
-        # Default backend is BlueZ D-Bus, which coexists with bluetoothd. Set
-        # hci_backend: true for the raw-HCI scanner, which needs an adapter not
-        # owned by bluetoothd but yields byte-exact advertisements.
-        cv.Optional(CONF_HCI_BACKEND, default=False): cv.boolean,
-        cv.Optional(CONF_SCAN_PARAMETERS, default={}): cv.All(
-            cv.Schema(
+CONFIG_SCHEMA = cv.All(
+    cv.require_esphome_version(2026, 8, 0),
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(ESP32BLETracker),
+            cv.Optional(CONF_HCI_DEVICE, default="hci0"): cv.string,
+            # Default backend is BlueZ D-Bus, which coexists with bluetoothd. Set
+            # hci_backend: true for the raw-HCI scanner, which needs an adapter not
+            # owned by bluetoothd but yields byte-exact advertisements.
+            cv.Optional(CONF_HCI_BACKEND, default=False): cv.boolean,
+            cv.Optional(CONF_SCAN_PARAMETERS, default={}): cv.All(
+                cv.Schema(
+                    {
+                        cv.Optional(
+                            CONF_DURATION, default="5min"
+                        ): cv.positive_time_period_seconds,
+                        cv.Optional(
+                            CONF_INTERVAL, default="320ms"
+                        ): cv.positive_time_period_milliseconds,
+                        cv.Optional(
+                            CONF_WINDOW, default="30ms"
+                        ): cv.positive_time_period_milliseconds,
+                        cv.Optional(CONF_ACTIVE, default=True): cv.boolean,
+                        cv.Optional(CONF_CONTINUOUS, default=True): cv.boolean,
+                    }
+                ),
+                _validate_scan_parameters,
+            ),
+            cv.Optional(CONF_ON_BLE_ADVERTISE): automation.validate_automation(
                 {
-                    cv.Optional(
-                        CONF_DURATION, default="5min"
-                    ): cv.positive_time_period_seconds,
-                    cv.Optional(
-                        CONF_INTERVAL, default="320ms"
-                    ): cv.positive_time_period_milliseconds,
-                    cv.Optional(
-                        CONF_WINDOW, default="30ms"
-                    ): cv.positive_time_period_milliseconds,
-                    cv.Optional(CONF_ACTIVE, default=True): cv.boolean,
-                    cv.Optional(CONF_CONTINUOUS, default=True): cv.boolean,
+                    cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
+                        ESPBTAdvertiseTrigger
+                    ),
+                    cv.Optional(CONF_MAC_ADDRESS): cv.ensure_list(cv.mac_address),
                 }
             ),
-            _validate_scan_parameters,
-        ),
-        cv.Optional(CONF_ON_BLE_ADVERTISE): automation.validate_automation(
-            {
-                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(ESPBTAdvertiseTrigger),
-                cv.Optional(CONF_MAC_ADDRESS): cv.ensure_list(cv.mac_address),
-            }
-        ),
-        cv.Optional(CONF_ON_BLE_SERVICE_DATA_ADVERTISE): cv.ensure_list(cv.Schema({})),
-        cv.Optional(CONF_ON_BLE_MANUFACTURER_DATA_ADVERTISE): cv.ensure_list(
-            cv.Schema({})
-        ),
-        cv.Optional(CONF_ON_SCAN_END): cv.ensure_list(cv.Schema({})),
-    }
-).extend(cv.COMPONENT_SCHEMA)
+            cv.Optional(CONF_ON_BLE_SERVICE_DATA_ADVERTISE): cv.ensure_list(
+                cv.Schema({})
+            ),
+            cv.Optional(CONF_ON_BLE_MANUFACTURER_DATA_ADVERTISE): cv.ensure_list(
+                cv.Schema({})
+            ),
+            cv.Optional(CONF_ON_SCAN_END): cv.ensure_list(cv.Schema({})),
+        }
+    ).extend(cv.COMPONENT_SCHEMA),
+)
 
 
 ESP_BLE_DEVICE_SCHEMA = cv.Schema(
@@ -166,6 +182,8 @@ async def to_code(config):
     cg.add(var.set_scan_active(params[CONF_ACTIVE]))
     cg.add(var.set_scan_continuous(params[CONF_CONTINUOUS]))
 
+    # Selects this class as the BLEHub alias in ble_device_base/ble_hub_impl.h.
+    cg.add_define("USE_ESP32_BLE_TRACKER")
     cg.add_define("USE_ESP32_BLE_DEVICE")
     cg.add_define("USE_ESP32_BLE_UUID")
     cg.add_global(esp32_ble_tracker_ns.using)
@@ -174,9 +192,6 @@ async def to_code(config):
         # libsystemd provides sd-bus for the D-Bus backend. (The raw-HCI path
         # needs no extra libs.)
         cg.add_build_flag("-lsystemd")
-        # libmbedcrypto provides the AES-CCM used by advertisement parsers (e.g.
-        # xiaomi_ble) that decrypt payloads.
-        cg.add_build_flag("-lmbedcrypto")
         _ensure_ble_patch_script()
 
 
@@ -185,9 +200,7 @@ def _ensure_ble_patch_script():
     pre-script (which also patches USE_ESP32 guards in ble_presence / ble_rssi to
     accept USE_HOST). Idempotent: skips re-registering if already present."""
     script_src = (
-        Path(__file__).parent.parent
-        / "web_server_base"
-        / "patch_web_server.py.script"
+        Path(__file__).parent.parent / "web_server_base" / "patch_web_server.py.script"
     )
     if not script_src.exists():
         return

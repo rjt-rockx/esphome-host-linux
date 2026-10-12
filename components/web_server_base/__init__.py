@@ -54,6 +54,23 @@ CONFIG_SCHEMA = cv.All(
 )
 
 
+def _final_validate(config):
+    # The host HTTP shim implements basic auth only.
+    if not CORE.is_host:
+        return config
+    import esphome.final_validate as fv
+
+    auth = fv.full_config.get().get("web_server", {}).get("auth") or {}
+    if str(auth.get("type", "")).lower() == "digest":
+        raise cv.Invalid(
+            "web_server auth type 'digest' is not supported on host; use 'type: basic'"
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate
+
+
 # --------------------------------------------------------------------------
 # Patch cv.only_on at import time so any CONFIG_SCHEMA built afterwards (e.g.
 # web_server, mqtt, sntp) does not reject the host platform. On host the
