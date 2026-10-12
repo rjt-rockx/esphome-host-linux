@@ -10,7 +10,6 @@ sudo apt-get install -y \
   libmosquitto-dev \
   bluez \
   libsystemd-dev \
-  libmbedtls-dev \
   libcap2-bin \
   python3-pip \
   python3-venv \
@@ -29,7 +28,9 @@ if [ ! -d "$HOME/esphome-venv" ]; then
   python3 -m venv "$HOME/esphome-venv"
 fi
 "$HOME/esphome-venv/bin/pip" install --upgrade pip wheel
-"$HOME/esphome-venv/bin/pip" install --upgrade esphome
+# Keep in step with ESPHOME_VERSION in .github/workflows/validate.yml: the
+# shims shadow upstream internals and break on unreviewed upgrades.
+"$HOME/esphome-venv/bin/pip" install "esphome==${ESPHOME_VERSION:-2026.9.1}"
 
 echo "=== versions ==="
 "$HOME/esphome-venv/bin/esphome" version

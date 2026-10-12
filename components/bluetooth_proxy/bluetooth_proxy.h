@@ -54,7 +54,8 @@ class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
 
  public:
   BluetoothProxy();
-  bool parse_device(const esp32_ble_tracker::ESPBTDevice &device) override;
+  // Advertisements come through the raw callback (on_raw_advertisement_).
+  bool parse_device(const esp32_ble_tracker::ESPBTDevice & /*device*/) override { return false; }
   void on_scanner_state(esp32_ble_tracker::ScannerState state) override;
   void dump_config() override;
   void setup() override;
@@ -116,6 +117,7 @@ class BluetoothProxy final : public esp32_ble_tracker::ESPBTDeviceListener,
 
  protected:
   void send_bluetooth_scanner_state_(esp32_ble_tracker::ScannerState state);
+  void on_raw_advertisement_(const ble_device_base::RawAdvertisement &raw);
   void flush_pending_advertisements_() {
     if (this->response_.advertisements_len == 0)
       return;

@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - run: pip install --upgrade pip
       - run: pip install "esphome==${ESPHOME_VERSION}"
       - name: Validate examples + valid/invalid fixtures
@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            liblgpio-dev libgpiod-dev libmosquitto-dev libsystemd-dev libmbedtls-dev build-essential \
+            liblgpio-dev libgpiod-dev libmosquitto-dev libsystemd-dev build-essential \
             python3-dbusmock python3-dbus python3-gi python3-pytest dbus
       - name: Install esphome (isolated; invoked as a subprocess by the harness)
         run: pipx install "esphome==${ESPHOME_VERSION}"
@@ -60,11 +60,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - name: Install host build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y liblgpio-dev libgpiod-dev libmosquitto-dev libsystemd-dev libmbedtls-dev build-essential
+          sudo apt-get install -y liblgpio-dev libgpiod-dev libmosquitto-dev libsystemd-dev build-essential
       - run: pip install --upgrade pip
       - run: pip install "esphome==${ESPHOME_VERSION}"
       - name: Compile each example for host target

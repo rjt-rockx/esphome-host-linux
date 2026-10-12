@@ -1,7 +1,7 @@
 """bluetooth_proxy for the host platform (native BlueZ).
 
 Host as a Home Assistant Bluetooth proxy: forwards parsed advertisements
-(re-serialized) and proxies active GATT connections over the ESPHome native API.
+(raw AD structures from the tracker) and proxies active GATT connections over the ESPHome native API.
 """
 
 from __future__ import annotations
@@ -67,6 +67,9 @@ async def to_code(config):
     connections = config.get(CONF_CONNECTIONS, [])
     cg.add_define("BLUETOOTH_PROXY_MAX_CONNECTIONS", max(len(connections), 1))
     cg.add_define("BLUETOOTH_PROXY_ADVERTISEMENT_BATCH_SIZE", 16)
+    if connections:
+        # api (2026.8.0+) compiles the connection/GATT messages only under this.
+        cg.add_define("USE_BLUETOOTH_PROXY_CONNECTIONS")
 
     for connection_conf in connections:
         connection_var = cg.new_Pvariable(connection_conf[CONF_ID])
